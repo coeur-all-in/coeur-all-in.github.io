@@ -173,7 +173,7 @@ export const CARDS = {
       items: [`20h, devant ${pl.name}${pl.address ? ' — ' + pl.address : ''}`, 'La discussion s’ouvre à 19h, juste pour se trouver', pl.tip],
       extra: [
         h('div', { class: 'btn-row', style: { marginTop: '16px' } },
-          button('Voir sur la carte', () => c.goTab?.('rdv'), 'btn quiet'),
+          button('Voir la carte', () => c.goTab?.('rdv'), 'btn quiet'),
           h('a', { class: 'btn quiet', href: maps, target: '_blank', rel: 'noopener', style: { textAlign: 'center', textDecoration: 'none', lineHeight: '30px' } }, 'Itinéraire ↗')),
         duel && h('button', { type: 'button', class: 'link', style: { textAlign: 'left', margin: '0', padding: '6px 0' }, onclick: () => placeDuel(mineP, theirP, pl.by === c.uid, c) },
           `Tiré au sort entre ${mineP.name} et ${theirP.name} · revoir le tirage`),

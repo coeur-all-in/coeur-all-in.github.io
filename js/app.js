@@ -17,6 +17,11 @@ const S = {
 let installEvt = null;
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; });
 
+// Structure d'appli : la page ne défile jamais, seul l'écran (.screen) défile au-dessus de la barre d'onglets.
+const scroller = () => root.querySelector(':scope > .screen');
+const scrollPos = () => scroller()?.scrollTop || 0;
+const setScroll = (y) => { const el = scroller(); if (el) el.scrollTop = y; };
+
 // ---------- Préférences locales ----------
 const pref = {
   get(k, d) { try { const v = localStorage.getItem('cai.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
@@ -51,15 +56,16 @@ async function boot() {
     if (now - lastTouch < 320 && !e.target.closest('.map, input, textarea')) e.preventDefault();
     lastTouch = now;
   }, { passive: false });
-  // Retour sur l'appli après l'avoir quittée : on repasse par le cœur (sauf en pleine saisie).
+  // Retour sur l'appli après l'avoir quittée plus de 10 s : on revient sur l'Accueil (sauf en pleine saisie).
   let hiddenAt = 0;
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { hiddenAt = Date.now(); return; }
     const away = hiddenAt && Date.now() - hiddenAt > 10000;
     hiddenAt = 0;
     const typing = document.querySelector('.sheet-wrap, .duel') || ['onboarding', 'auth', 'splash', 'boot', 'thread'].includes(S.view);
-    if (away && !typing && S.store) {
-      showSplash(Promise.resolve(() => (S.uid || !S.store.needsAuth ? afterLogin() : showAuth('login'))));
+    // Appli pas fermée : retour direct à l'Accueil (le cœur ne s'affiche qu'au lancement).
+    if (away && !typing && S.store && S.profile) {
+      route().catch(() => {});
       return;
     }
     refresh();
@@ -431,7 +437,7 @@ function updateCountdown() {
 
 function showFeed({ keepScroll } = {}) {
   S.view = 'feed';
-  const y = window.scrollY;
+  const y = scrollPos();
   const c = ctx();
   const { date } = S.data;
   const list = unlocked(date, S.uid);
@@ -477,7 +483,7 @@ function showFeed({ keepScroll } = {}) {
     h('div', { class: 'spacer' }),
     tabbar('home'),
   ));
-  if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
+  setScroll(keepScroll ? y : 0);
 }
 
 function demoPanel() {
@@ -500,14 +506,14 @@ function showCard(key, { keepScroll } = {}) {
   if (!CARDS[key] || !S.data) return showFeed();
   S.view = 'card';
   S.cardKey = key;
-  const y = window.scrollY;
+  const y = scrollPos();
   markSeen(key);
   setBadge(unlocked(S.data.date, S.uid).filter((m) => !seen().has(m.key)).length);
   root.replaceChildren(h('main', { class: `screen${keepScroll ? ' still' : ''}` },
     topbar(() => showFeed()),
     CARDS[key](ctx()),
     tabbar('home')));
-  if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
+  setScroll(keepScroll ? y : 0);
 }
 
 // ---------- Onglets : Accueil, Rendez-vous, Discussion ----------
@@ -531,13 +537,13 @@ function goTab(id) {
 
 function showRdv({ keepScroll } = {}) {
   S.view = 'rdv';
-  const y = window.scrollY;
+  const y = scrollPos();
   root.replaceChildren(h('main', { class: `screen${keepScroll ? ' still' : ''}` },
     topbar(),
     rdvView(S.data ? ctx() : null),
     h('div', { class: 'spacer' }),
     tabbar('rdv')));
-  window.scrollTo(0, keepScroll ? y : 0);
+  setScroll(keepScroll ? y : 0);
 }
 
 const chatOpen = () => {

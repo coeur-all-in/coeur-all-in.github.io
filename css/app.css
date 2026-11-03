@@ -147,7 +147,14 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; min-height: 100%; }
 /* Comme une vraie appli : pas de zoom, pas de glissement latéral, pas d'effet élastique. */
-html, body { overflow-x: clip; overscroll-behavior: none; touch-action: pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+html, body { height: 100%; overflow: hidden; overscroll-behavior: none; touch-action: pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* La page ne défile jamais : seul l'écran défile, la barre d'onglets reste immobile. */
+#app { height: 100dvh; overflow: hidden; }
+#app > .screen > * { flex-shrink: 0; }
+#app > .screen {
+  height: 100%; min-height: 0; overflow-y: auto; overflow-x: hidden; background-attachment: local, local;
+  overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;
+}
 body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 input, textarea, .bubble, .quote, .body, .italic { -webkit-user-select: text; user-select: text; }
 .map, .map * { touch-action: none; }
@@ -166,7 +173,6 @@ a { color: var(--accent); }
 #app {
   max-width: 480px;
   margin: 0 auto;
-  min-height: 100dvh;
   position: relative;
   background: var(--bg);
   overflow-x: clip;
@@ -571,7 +577,7 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
 
 /* ---------- Conversation plein écran ---------- */
 .thread {
-  height: 100dvh; display: flex; flex-direction: column; background: var(--bg);
+  height: 100%; display: flex; flex-direction: column; background: var(--bg);
   animation: slide-in 0.26s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 @keyframes slide-in { from { opacity: 0; transform: translateX(14px); } }
@@ -595,7 +601,7 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
 .thread-locked { text-align: center; font-size: 13.5px; color: var(--muted); padding: 12px; border-radius: 16px; background: var(--surface); }
 .bubble.pending { opacity: 0.6; }
 .bubble.me + .bubble.me, .bubble.them + .bubble.them { margin-top: -1px; }
-@media (min-width: 980px) { .thread { height: calc(100dvh - 48px); } }
+
 
 /* ---------- Autocomplétion ---------- */
 .ac { position: relative; }
@@ -724,10 +730,10 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
   .desk p { font-size: 18px; color: var(--ink-2); max-width: 34ch; line-height: 1.55; margin: 0; }
   .desk .url { font-weight: 600; color: var(--accent); }
   #app {
-    margin: 24px 40px 24px auto; width: 460px; min-height: calc(100dvh - 48px);
+    margin: 24px 40px 24px auto; width: 460px; height: calc(100dvh - 48px);
     border-radius: 34px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.18), 0 0 0 1px var(--line); overflow: clip;
   }
-  .screen { min-height: calc(100dvh - 48px); }
+  #app > .screen { min-height: 0; }
   .sheet-wrap { justify-content: flex-end; padding-right: 40px; }
   .sheet { width: 460px; }
   .toast { left: auto; right: 70px; transform: none; animation-name: fade; }

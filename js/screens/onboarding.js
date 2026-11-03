@@ -233,7 +233,7 @@ export function onboarding(root, { initial, onDone, onCancel, startStep = 0 }) {
     const next = button(i === all.length - 1 ? (initial ? 'Enregistrer' : 'Trouver quelqu’un') : 'Continuer', async () => {
       const e = s.validate();
       if (e) { err.textContent = e; err.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
-      if (i < all.length - 1) { i++; render(); window.scrollTo(0, 0); return; }
+      if (i < all.length - 1) { i++; render(); return; }
       next.disabled = true;
       try { await onDone(cleanup(p)); } catch (ex) { next.disabled = false; err.textContent = ex.message; }
     });
