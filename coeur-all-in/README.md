@@ -67,8 +67,8 @@ puis ouvrir http://localhost:8000. Aucune dépendance, aucun build : HTML, CSS e
 
 ## Mise en ligne
 
-Chaque push sur `main` déploie automatiquement sur GitHub Pages (`.github/workflows/pages.yml`).
-Dans le dépôt : *Settings → Pages → Source : GitHub Actions*.
+Le site est en ligne sur **https://coeur-all-in.github.io**. Chaque push sur `main` le redéploie automatiquement
+(GitHub Pages, *Settings → Pages → Deploy from a branch : main / root*). Le fichier `.nojekyll` sert les fichiers tels quels.
 
 ## Structure
 
