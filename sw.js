@@ -1,10 +1,11 @@
 // Service worker : appli disponible hors ligne + clic sur les notifications.
-const VERSION = 'cai-v9';
+const VERSION = 'cai-v10';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/config.js', 'js/content.js', 'js/timeline.js', 'js/matching.js', 'js/date-logic.js',
   'js/ui.js', 'js/notify.js', 'js/screens/cards.js', 'js/screens/onboarding.js',
   'js/store/index.js', 'js/store/local.js', 'js/store/bots.js', 'js/store/supabase.js',
+  'js/geo.js', 'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/badge-96.png',
 ];
 

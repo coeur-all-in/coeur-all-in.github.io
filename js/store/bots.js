@@ -7,7 +7,7 @@ const base = {
 };
 
 const noccio = {
-  title: 'Au bord de l’eau', name: 'Noccio', address: '202 rue d’Aubervilliers, Paris',
+  title: 'Au bord de l’eau', name: 'Noccio', address: '202 rue d’Aubervilliers, Paris', lat: 48.8907, lng: 2.3697,
   after: 'De là vous marchez ensemble jusqu’au bassin de la Villette. La suite se décide en chemin.',
   tip: 'Prévois des chaussures adaptées',
 };
@@ -50,7 +50,7 @@ export const BOTS = [
     portrait: { first: 'drôle avant même d’avoir dit bonjour', people: 'transforme n’importe quelle file d’attente en soirée', unforgivable: 'le mépris' },
     phone: '07 11 22 33 44',
     script: {
-      place: { title: 'En hauteur', name: 'Le parc de Belleville, en haut des escaliers', address: 'Rue Piat, Paris 20e', after: 'Vous regardez Paris d’en haut, puis vous descendez vers la rue de Belleville.', tip: 'Prévois une veste, ça souffle là-haut' },
+      place: { title: 'En hauteur', name: 'Le parc de Belleville, en haut des escaliers', address: 'Rue Piat, Paris 20e', lat: 48.8715, lng: 2.3846, after: 'Vous regardez Paris d’en haut, puis vous descendez vers la rue de Belleville.', tip: 'Prévois une veste, ça souffle là-haut' },
       phrase: 'Je pose souvent la question qu’on n’ose pas poser. Tu es prévenu·e.',
       bet: 'Tu vas me demander d’où vient mon prénom dans les dix premières minutes.', doneMin: 40, again: true,
     },

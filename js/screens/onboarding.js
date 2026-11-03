@@ -5,6 +5,7 @@ import {
 } from '../content.js';
 import { age } from '../matching.js';
 import { button, h, icon, toast } from '../ui.js';
+import { autocomplete, mapBlock, searchCity } from '../geo.js';
 
 // ---------- Champs réutilisables ----------
 function chips(options, get, set, { multi = false, max = 99 } = {}) {
@@ -83,17 +84,26 @@ function steps(p) {
       eyebrow: 'Pour se retrouver', title: 'Où',
       render: () => {
         const geo = h('div', { class: 'small', style: { marginTop: '8px' } }, p.lat ? 'Position enregistrée ✓' : '');
+        const mapBox = h('div', { style: { marginTop: '12px' } });
+        const showCityMap = () => mapBox.replaceChildren(...[p.lat != null && mapBlock({ lat: p.lat, lng: p.lng, label: p.city }, { height: 150, zoom: 11 })].filter(Boolean));
+        const cityInput = text(() => p.city, (v) => { p.city = v; p.lat = null; p.lng = null; geo.textContent = ''; showCityMap(); },
+          { placeholder: 'Commence à écrire : Par…', autocapitalize: 'words' });
+        const cityField = autocomplete(cityInput, {
+          search: searchCity,
+          onPick: (it) => { p.city = it.city; p.lat = +it.lat.toFixed(3); p.lng = +it.lng.toFixed(3); geo.textContent = `${it.label} ✓`; showCityMap(); },
+        });
+        showCityMap();
         const km = range(() => p.maxKm, (v) => { p.maxKm = v; }, { min: 2, max: 100, fmt: (v) => `${v} km` });
         return [
-          field('Ta ville', text(() => p.city, (v) => { p.city = v; }, { placeholder: 'Paris', autocomplete: 'address-level2' }),
+          field('Ta ville', cityField,
             button('Utiliser ma position', () => {
               if (!navigator.geolocation) { geo.textContent = 'Géolocalisation indisponible.'; return; }
               geo.textContent = 'Localisation…';
               navigator.geolocation.getCurrentPosition(
-                (pos) => { p.lat = +pos.coords.latitude.toFixed(3); p.lng = +pos.coords.longitude.toFixed(3); geo.textContent = 'Position enregistrée ✓ (arrondie à ~100 m)'; },
+                (pos) => { p.lat = +pos.coords.latitude.toFixed(3); p.lng = +pos.coords.longitude.toFixed(3); geo.textContent = 'Position enregistrée ✓ (arrondie à ~100 m)'; showCityMap(); },
                 () => { geo.textContent = 'Position refusée — la ville suffira.'; },
                 { timeout: 10000 });
-            }, 'link'), geo),
+            }, 'link'), geo, mapBox),
           h('div', { class: 'field' }, h('label', {}, 'Distance maximum ', km.val), km.node),
           field('Les soirs où tu es libre', chips(
             [{ id: 4, label: 'Jeudi' }, { id: 5, label: 'Vendredi' }, { id: 6, label: 'Samedi' }],

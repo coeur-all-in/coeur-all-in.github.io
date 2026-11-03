@@ -41,7 +41,19 @@ function ctx() {
 // ---------- Démarrage ----------
 async function boot() {
   setInterval(tick, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  // Retour sur l'appli après l'avoir quittée : on repasse par le cœur (sauf en pleine saisie).
+  let hiddenAt = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    const away = hiddenAt && Date.now() - hiddenAt > 10000;
+    hiddenAt = 0;
+    const typing = document.querySelector('.sheet-wrap, .duel') || ['onboarding', 'auth', 'splash', 'boot'].includes(S.view);
+    if (away && !typing && S.store) {
+      showSplash(Promise.resolve(() => (S.uid || !S.store.needsAuth ? afterLogin() : showAuth('login'))));
+      return;
+    }
+    refresh();
+  });
   // Le chargement démarre tout de suite, pendant que le cœur bat.
   const ready = prepare();
   ready.catch(() => {});

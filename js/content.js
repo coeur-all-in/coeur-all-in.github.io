@@ -189,13 +189,13 @@ export function fill(text, f) {
 
 // Lieux de repli quand les deux laissent le choix : des points publics, faciles à trouver.
 export const FALLBACK_PLACES = {
-  paris: { title: 'Au bord de l’eau', name: 'Le bassin de la Villette', address: 'Place de la Bataille-de-Stalingrad, Paris 19e', after: 'De là, vous longez le canal ensemble. La suite se décide en chemin.', tip: 'Prévois des chaussures adaptées' },
-  lyon: { title: 'Entre deux rives', name: 'La passerelle Saint-Georges', address: 'Quai Fulchiron, Lyon 5e', after: 'Vous traversez, puis vous montez ou descendez les quais. À vous de voir.', tip: 'Prévois une veste, ça souffle sur la Saône' },
-  marseille: { title: 'Face à la mer', name: 'Le Vieux-Port, côté ombrière', address: 'Quai de la Fraternité, Marseille', after: 'De là, vous marchez vers le Mucem. La suite se décide en chemin.', tip: 'Prévois des chaussures adaptées' },
-  bordeaux: { title: 'Le miroir', name: 'Le Miroir d’eau', address: 'Place de la Bourse, Bordeaux', after: 'Vous remontez les quais ensemble. La suite se décide en chemin.', tip: 'Prévois des chaussures adaptées' },
-  lille: { title: 'Sous les arcades', name: 'La Vieille Bourse', address: 'Place du Général-de-Gaulle, Lille', after: 'De là, vous marchez dans le Vieux-Lille. La suite se décide en chemin.', tip: 'Prévois un parapluie, on ne sait jamais' },
-  toulouse: { title: 'Bord de Garonne', name: 'La Prairie des Filtres', address: 'Cours Dillon, Toulouse', after: 'Vous longez la Garonne ensemble. La suite se décide en chemin.', tip: 'Prévois des chaussures adaptées' },
-  nantes: { title: 'Sur l’île', name: 'Les Machines de l’île, côté Carrousel', address: 'Parc des Chantiers, Nantes', after: 'Vous marchez le long de la Loire. La suite se décide en chemin.', tip: 'Prévois une veste' },
+  paris: { lat: 48.8848, lng: 2.3708, title: 'Au bord de l’eau', name: 'Le bassin de la Villette', address: 'Place de la Bataille-de-Stalingrad, Paris 19e', after: 'De là, vous longez le canal ensemble. La suite se décide en chemin.', tip: 'Prévois des chaussures adaptées' },
+  lyon: { lat: 45.7605, lng: 4.8263, title: 'Entre deux rives', name: 'La passerelle Saint-Georges', address: 'Quai Fulchiron, Lyon 5e', after: 'Vous traversez, puis vous montez ou descendez les quais. À vous de voir.', tip: 'Prévois une veste, ça souffle sur la Saône' },
+  marseille: { lat: 43.2951, lng: 5.3744, title: 'Face à la mer', name: 'Le Vieux-Port, côté ombrière', address: 'Quai de la Fraternité, Marseille', after: 'De là, vous marchez vers le Mucem. La suite se décide en chemin.', tip: 'Prévois des chaussures adaptées' },
+  bordeaux: { lat: 44.8413, lng: -0.5698, title: 'Le miroir', name: 'Le Miroir d’eau', address: 'Place de la Bourse, Bordeaux', after: 'Vous remontez les quais ensemble. La suite se décide en chemin.', tip: 'Prévois des chaussures adaptées' },
+  lille: { lat: 50.6371, lng: 3.0636, title: 'Sous les arcades', name: 'La Vieille Bourse', address: 'Place du Général-de-Gaulle, Lille', after: 'De là, vous marchez dans le Vieux-Lille. La suite se décide en chemin.', tip: 'Prévois un parapluie, on ne sait jamais' },
+  toulouse: { lat: 43.5975, lng: 1.4366, title: 'Bord de Garonne', name: 'La Prairie des Filtres', address: 'Cours Dillon, Toulouse', after: 'Vous longez la Garonne ensemble. La suite se décide en chemin.', tip: 'Prévois des chaussures adaptées' },
+  nantes: { lat: 47.2066, lng: -1.5642, title: 'Sur l’île', name: 'Les Machines de l’île, côté Carrousel', address: 'Parc des Chantiers, Nantes', after: 'Vous marchez le long de la Loire. La suite se décide en chemin.', tip: 'Prévois une veste' },
 };
 
 export function fallbackPlace(city) {

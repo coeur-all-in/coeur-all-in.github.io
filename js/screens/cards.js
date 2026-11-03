@@ -1,6 +1,7 @@
 // Chaque carte du date. Les textes suivent les maquettes ; seuls les prénoms, jours, lieux
 // et accords (il / elle / iel) sont calculés.
 import { GAMES, fill, forms, recognitionLines } from '../content.js';
+import { autocomplete, mapBlock, searchPlace } from '../geo.js';
 import { objectiveFor, partnerOf, resolvePlace } from '../date-logic.js';
 import { at, clock, isDuringDate, moments } from '../timeline.js';
 import { button, card, confirmSheet, dayLabel, h, hourLabel, icon, relDay, sheet, status, toast, weekday } from '../ui.js';
@@ -160,13 +161,22 @@ export const CARDS = {
     const body = [`Vous vous retrouvez devant ${pl.name}.`];
     if (pl.after) body.push(pl.after);
     const recog = recognitionLines(c.partner);
+    const mineP = m.place;
+    const theirP = theirs(c).place;
+    const duel = mineP?.name && !mineP.leave && theirP?.name && !theirP.leave;
+    if (duel) maybeDuel(c, mineP, theirP, pl.by === c.uid);
     return card({
       eyebrow: 'Le lieu est fixé',
       title: pl.title || pl.name,
       meta: dateMeta(c),
       body,
       items: [`20h, devant ${pl.name}${pl.address ? ' — ' + pl.address : ''}`, 'Vos numéros à 19h30, juste pour se trouver', pl.tip],
-      extra: h('a', { class: 'link', href: maps, target: '_blank', rel: 'noopener', style: { textAlign: 'left', margin: '4px 0 0', padding: '6px 0', color: 'var(--accent)' } }, 'Ouvrir l’itinéraire ↗'),
+      extra: [
+        mapBlock({ lat: pl.lat, lng: pl.lng, label: pl.name }),
+        h('a', { class: 'link', href: maps, target: '_blank', rel: 'noopener', style: { textAlign: 'left', margin: '4px 0 0', padding: '6px 0', color: 'var(--accent)' } }, 'Ouvrir l’itinéraire ↗'),
+        duel && h('button', { type: 'button', class: 'link', style: { textAlign: 'left', margin: '0', padding: '6px 0' }, onclick: () => placeDuel(mineP, theirP, pl.by === c.uid, c) },
+          `Tiré au sort entre ${mineP.name} et ${theirP.name} · revoir le tirage`),
+      ],
       sections: [
         recog.length && { label: `Pour ${P.le} reconnaître`, text: h('div', { class: 'body' }, h('p', { style: { fontSize: '16.5px' } }, recog.join(' · '))) },
         { label: 'Ton pari', italic: true, text: m.bet ? `« ${m.bet} »` : `D’après ce que tu sais de ${P.lui}, si tu devais parier quelque chose sur ${P.lui}, tu dirais quoi ? Une phrase.` },
@@ -366,18 +376,32 @@ function timerSheet(seconds) {
 // ---------- Formulaires ----------
 function tonTourForm(c) {
   const P = pf(c);
-  const st = { leave: false, name: '', address: '', title: '', after: '', tip: '', phrase: '' };
+  const st = { leave: false, name: '', address: '', title: '', after: '', tip: '', phrase: '', lat: null, lng: null };
   sheet((close) => {
     const placeBox = h('div', {});
     const err = h('div', { class: 'error' });
-    const inp = (label, key, ph, multiline) => h('div', { class: 'field' }, h('label', {}, label),
-      h(multiline ? 'textarea' : 'input', { class: 'input', placeholder: ph, maxlength: multiline ? 160 : 80, oninput: (e) => { st[key] = e.target.value; } }));
-    const renderPlace = () => placeBox.replaceChildren(...(st.leave
-      ? [h('p', { class: 'small', style: { margin: '0 0 20px' } }, `Tu lui laisses le choix. Si vous laissez tous les deux, je choisis pour vous.`)]
-      : [inp('Le lieu (public, où on s’entend parler)', 'name', 'Noccio'), inp('L’adresse', 'address', '202 rue d’Aubervilliers, Paris'),
-        inp('Et après ? (facultatif)', 'after', 'De là, vous marchez jusqu’au bassin de la Villette.', true),
-        inp('Si ce lieu était un titre (facultatif)', 'title', 'Au bord de l’eau'),
-        inp('Un conseil (facultatif)', 'tip', 'Prévois des chaussures adaptées')]));
+    const input = (key, ph, multiline) => h(multiline ? 'textarea' : 'input', {
+      class: 'input', placeholder: ph, maxlength: multiline ? 160 : 90, oninput: (e) => { st[key] = e.target.value; },
+    });
+    const fieldOf = (label, ...ctl) => h('div', { class: 'field' }, h('label', {}, label), ...ctl);
+    // Le lieu : liste déroulante qui se met à jour à chaque lettre, puis carte.
+    const mapBox = h('div', { style: { marginTop: '12px' } });
+    const showMap = () => mapBox.replaceChildren(...[st.lat != null && mapBlock({ lat: st.lat, lng: st.lng, label: st.name }, { height: 170 })].filter(Boolean));
+    const addr = h('input', { class: 'input', placeholder: 'Rempli automatiquement', maxlength: 120, oninput: (e) => { st.address = e.target.value; st.lat = null; st.lng = null; showMap(); } });
+    const nameIn = h('input', { class: 'input', placeholder: 'Commence à écrire : un resto, un bar, un parc…', maxlength: 90, oninput: (e) => { st.name = e.target.value; } });
+    const nameField = autocomplete(nameIn, {
+      search: (q, signal) => searchPlace(q, c.me, signal),
+      onPick: (it) => { st.name = it.name; st.address = it.address; st.lat = it.lat; st.lng = it.lng; addr.value = it.address; showMap(); },
+    });
+    const proposeNodes = [
+      fieldOf('Le lieu (public, où on s’entend parler)', nameField, mapBox),
+      fieldOf('L’adresse', addr),
+      fieldOf('Et après ? (facultatif)', input('after', 'De là, vous marchez jusqu’au bassin de la Villette.', true)),
+      fieldOf('Si ce lieu était un titre (facultatif)', input('title', 'Au bord de l’eau')),
+      fieldOf('Un conseil (facultatif)', input('tip', 'Prévois des chaussures adaptées')),
+    ];
+    const leaveNode = h('p', { class: 'small', style: { margin: '0 0 20px' } }, 'Tu lui laisses le choix. Si vous laissez tous les deux, je choisis pour vous.');
+    const renderPlace = () => placeBox.replaceChildren(...(st.leave ? [leaveNode] : proposeNodes));
     const toggle = h('div', { class: 'chips', style: { marginBottom: '18px' } });
     const renderToggle = () => toggle.replaceChildren(
       h('button', { class: 'chip', type: 'button', 'aria-pressed': String(!st.leave), onclick: () => { st.leave = false; renderToggle(); renderPlace(); } }, 'Je propose un lieu'),
@@ -396,7 +420,7 @@ function tonTourForm(c) {
       button('Envoyer', async () => {
         if (!st.leave && (!st.name.trim() || !st.address.trim())) { err.textContent = 'Le nom du lieu et son adresse, ou laisse-lui le choix.'; return; }
         if (st.phrase.trim().length < 10) { err.textContent = 'Ta phrase est un peu courte.'; return; }
-        const placeVal = st.leave ? { leave: true } : { name: st.name.trim(), address: st.address.trim(), title: st.title.trim(), after: st.after.trim(), tip: st.tip.trim() };
+        const placeVal = st.leave ? { leave: true } : { name: st.name.trim(), address: st.address.trim(), title: st.title.trim(), after: st.after.trim(), tip: st.tip.trim(), lat: st.lat, lng: st.lng };
         await c.store.answer('place', placeVal);
         await c.store.answer('phrase', st.phrase.trim());
         close();
@@ -442,4 +466,68 @@ function verdictSheet(c) {
 export async function markDone(c) {
   const ok = await confirmSheet({ title: 'Fait ?', sub: 'Ton objectif est atteint ? Je note l’heure.', yes: 'Fait', no: 'Pas encore' });
   if (ok) await act(c, 'done', clock.now(), 'Bien joué. Je note l’heure.');
+}
+
+// ---------- Tirage au sort quand les deux ont proposé un lieu ----------
+const duelShown = new Set();
+function maybeDuel(c, mine, theirs, mineWins) {
+  const key = `cai.duel.${c.date.id}`;
+  let done = false;
+  try { done = localStorage.getItem(key) === '1'; } catch { /* rien */ }
+  if (done || duelShown.has(key)) return;
+  duelShown.add(key);
+  setTimeout(() => placeDuel(mine, theirs, mineWins, c, () => { try { localStorage.setItem(key, '1'); } catch { /* rien */ } }), 450);
+}
+
+export function placeDuel(mine, theirs, mineWins, c, onDone) {
+  const P = pf(c);
+  const face = (p, who, cls) => h('div', { class: `duel-face ${cls}` },
+    h('div', { class: 'duel-who' }, who),
+    h('div', { class: 'duel-name' }, p.title || p.name),
+    p.title && h('div', { class: 'duel-place' }, p.name),
+    h('div', { class: 'duel-addr' }, p.address || ''));
+  const coin = h('div', { class: 'duel-card' },
+    face(mine, 'Ta proposition', 'front'),
+    face(theirs, `Sa proposition`, 'back'));
+  const status = h('div', { class: 'duel-status' }, 'Vous avez proposé tous les deux…');
+  const burst = h('div', { class: 'duel-burst' });
+  const go = h('button', { class: 'btn', type: 'button', style: { opacity: 0, pointerEvents: 'none' } }, 'Voir le lieu');
+  const wrap = h('div', { class: 'duel', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Tirage au sort du lieu' },
+    h('div', { class: 'duel-inner' },
+      h('div', { class: 'eyebrow', style: { alignSelf: 'center' } }, 'Le hasard tranche'),
+      h('h2', { class: 'duel-title' }, 'Pile ou face'),
+      h('div', { class: 'duel-stage' }, burst, coin),
+      status,
+      go));
+  const close = () => { wrap.classList.add('out'); setTimeout(() => wrap.remove(), 300); document.body.style.overflow = ''; onDone?.(); };
+  go.onclick = close;
+  document.body.append(wrap);
+  document.body.style.overflow = 'hidden';
+
+  // 7 à 8 tours complets, puis on s'arrête sur la bonne face (0° = la tienne, 180° = la sienne).
+  const turns = 7 * 360 + (mineWins ? 0 : 180);
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    coin.style.transition = reduce ? 'none' : 'transform 4.2s cubic-bezier(0.12, 0.72, 0.18, 1)';
+    coin.style.transform = `rotateY(${turns}deg)`;
+  }));
+  const ticks = [400, 900, 1500, 2200];
+  const lines = ['Le hasard réfléchit…', 'Ça tourne…', 'Presque…', 'Et c’est…'];
+  ticks.forEach((t, i) => setTimeout(() => { status.textContent = lines[i]; navigator.vibrate?.(8); }, reduce ? 0 : t));
+  setTimeout(() => {
+    const w = mineWins ? mine : theirs;
+    status.replaceChildren(h('strong', {}, w.title || w.name), mineWins ? ' : ta proposition l’emporte !' : ` : sa proposition l’emporte !`);
+    coin.classList.add('win');
+    navigator.vibrate?.([30, 40, 60]);
+    for (let i = 0; i < 26; i++) {
+      const a = (Math.PI * 2 * i) / 26 + Math.random() * 0.3;
+      const d = 110 + Math.random() * 120;
+      burst.append(h('i', { style: {
+        '--x': `${Math.cos(a) * d}px`, '--y': `${Math.sin(a) * d}px`, '--r': `${Math.random() * 120 - 60}deg`,
+        '--s': (0.6 + Math.random() * 0.9).toFixed(2), animationDelay: `${Math.random() * 120}ms`,
+      } }));
+    }
+    go.style.opacity = 1;
+    go.style.pointerEvents = 'auto';
+  }, reduce ? 300 : 4300);
 }
