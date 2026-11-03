@@ -381,14 +381,14 @@ function applyFont(id) {
   else document.documentElement.removeAttribute('data-font');
   pref.set('font', id);
 }
-const currentTheme = () => document.documentElement.getAttribute('data-theme') || 'creme';
+const currentTheme = () => document.documentElement.getAttribute('data-theme') || 'minuit';
 function applyTheme(id) {
   const t = THEMES.find((x) => x.id === id) || THEMES[0];
   document.documentElement.setAttribute('data-theme', t.id);
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', t.bg);
   pref.set('theme', t.id);
 }
-applyTheme(pref.get('theme', 'creme'));
+applyTheme(pref.get('theme', 'minuit'));
 
 function themeSheet() {
   sheet((close) => {
