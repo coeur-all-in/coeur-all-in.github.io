@@ -45,9 +45,12 @@ async function boot() {
   try {
     S.store = await createStore();
     ({ userId: S.uid } = await S.store.init());
-    S.profile = await S.store.getProfile();
-    if (!S.profile) return showWelcome();
-    await route({ autoOpen: true });
+    if (S.store.needsAuth) {
+      S.store.onAuth((event) => { if (event === 'PASSWORD_RECOVERY') showNewPassword(); });
+      if (S.store.recovery && S.uid) return showNewPassword();
+      if (!S.uid) return pref.get('seenWelcome', false) ? showAuth('login') : showWelcome();
+    }
+    await afterLogin();
   } catch (e) {
     console.error(e);
     root.replaceChildren(h('main', { class: 'screen' },
@@ -109,6 +112,111 @@ async function refresh(force = false) {
   } catch (e) { console.warn(e); }
 }
 
+async function afterLogin() {
+  S.profile = await S.store.getProfile();
+  if (!S.profile) return S.store.needsAuth ? showOnboarding() : showWelcome();
+  await route({ autoOpen: true });
+}
+
+// ---------- Compte : inscription / connexion ----------
+function showAuth(mode = 'signup') {
+  S.view = 'auth';
+  pref.set('seenWelcome', true);
+  const signup = mode === 'signup';
+  const st = { email: '', password: '' };
+  const err = h('div', { class: 'error', role: 'alert' });
+  const pw = h('input', {
+    class: 'input', type: 'password', autocomplete: signup ? 'new-password' : 'current-password', minlength: 8,
+    placeholder: signup ? '8 caractères minimum' : 'Ton mot de passe', oninput: (e) => { st.password = e.target.value; },
+  });
+  const toggle = h('button', { type: 'button', class: 'link', style: { margin: '6px 0 0', padding: '4px 0' },
+    onclick: () => { pw.type = pw.type === 'password' ? 'text' : 'password'; toggle.textContent = pw.type === 'password' ? 'Afficher le mot de passe' : 'Masquer le mot de passe'; } },
+  'Afficher le mot de passe');
+  const submit = button(signup ? 'Créer mon compte' : 'Me connecter', go);
+  async function go() {
+    err.textContent = '';
+    const mail = st.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) { err.textContent = 'Adresse e-mail invalide.'; return; }
+    if (st.password.length < 8) { err.textContent = 'Mot de passe trop court (8 caractères minimum).'; return; }
+    submit.disabled = true;
+    try {
+      if (signup) {
+        const r = await S.store.signUp(mail, st.password);
+        if (r.confirmEmail) return showCheckEmail(mail);
+      } else {
+        await S.store.signIn(mail, st.password);
+      }
+      ({ userId: S.uid } = await S.store.init());
+      await afterLogin();
+    } catch (e) {
+      err.textContent = e.message;
+      submit.disabled = false;
+    }
+  }
+  const form = h('form', { onsubmit: (e) => { e.preventDefault(); go(); } },
+    h('div', { class: 'field' }, h('label', {}, 'Ton e-mail'),
+      h('input', { class: 'input', type: 'email', autocomplete: 'email', inputmode: 'email', autocapitalize: 'off', placeholder: 'prenom@exemple.fr', oninput: (e) => { st.email = e.target.value; } })),
+    h('div', { class: 'field' }, h('label', {}, signup ? 'Choisis un mot de passe' : 'Mot de passe'), pw, toggle),
+    err, submit);
+  root.replaceChildren(h('main', { class: 'screen' },
+    h('div', { class: 'topbar' }, h('div', { class: 'brand' }, logo(), CONFIG.APP_NAME), h('span')),
+    h('div', { class: 'eyebrow' }, signup ? 'Bienvenue' : 'Te revoilà'),
+    h('h1', { class: 'title', style: { marginBottom: '26px' } }, signup ? 'Créer un compte' : 'Connexion'),
+    form,
+    !signup && button('Mot de passe oublié ?', () => forgotPassword(st.email), 'link'),
+    h('div', { class: 'spacer' }),
+    h('p', { class: 'foot' }, signup ? 'Déjà un compte ?' : 'Pas encore de compte ?'),
+    button(signup ? 'Me connecter' : 'Créer un compte', () => showAuth(signup ? 'login' : 'signup'), 'btn ghost'),
+    signup && h('p', { class: 'foot' }, 'En créant un compte, tu confirmes avoir 18 ans ou plus.'),
+  ));
+}
+
+function showCheckEmail(mail) {
+  S.view = 'auth';
+  root.replaceChildren(h('main', { class: 'screen' },
+    h('div', { class: 'topbar' }, h('div', { class: 'brand' }, logo(), CONFIG.APP_NAME), h('span')),
+    h('div', { class: 'eyebrow' }, 'Presque fini'),
+    h('h1', { class: 'title' }, 'Vérifie tes e-mails'),
+    h('div', { class: 'body' }, h('p', {}, `Je t’ai envoyé un lien à ${mail}. Clique dessus, puis reviens te connecter.`)),
+    h('div', { class: 'spacer' }),
+    button('Me connecter', () => showAuth('login'))));
+}
+
+function forgotPassword(prefill = '') {
+  sheet((close) => {
+    let mail = prefill;
+    const err = h('div', { class: 'error' });
+    return [
+      h('h3', {}, 'Mot de passe oublié'),
+      h('p', { class: 'sub' }, 'Je t’envoie un lien pour en choisir un nouveau.'),
+      h('div', { class: 'field' }, h('input', { class: 'input', type: 'email', value: prefill, placeholder: 'Ton e-mail', oninput: (e) => { mail = e.target.value; } })),
+      err,
+      button('Envoyer le lien', async () => {
+        try { await S.store.resetPassword(mail.trim().toLowerCase()); close(); toast('Lien envoyé. Regarde tes e-mails (et les spams).'); }
+        catch (e) { err.textContent = e.message; }
+      }),
+    ];
+  });
+}
+
+function showNewPassword() {
+  S.view = 'auth';
+  let pw = '';
+  const err = h('div', { class: 'error' });
+  root.replaceChildren(h('main', { class: 'screen' },
+    h('div', { class: 'topbar' }, h('div', { class: 'brand' }, logo(), CONFIG.APP_NAME), h('span')),
+    h('div', { class: 'eyebrow' }, 'Sécurité'),
+    h('h1', { class: 'title', style: { marginBottom: '26px' } }, 'Nouveau mot de passe'),
+    h('div', { class: 'field' }, h('input', { class: 'input', type: 'password', autocomplete: 'new-password', placeholder: '8 caractères minimum', oninput: (e) => { pw = e.target.value; } })),
+    err,
+    h('div', { class: 'spacer' }),
+    button('Enregistrer', async () => {
+      if (pw.length < 8) { err.textContent = 'Mot de passe trop court (8 caractères minimum).'; return; }
+      try { await S.store.updatePassword(pw); toast('Mot de passe changé.'); await afterLogin(); }
+      catch (e) { err.textContent = e.message; }
+    })));
+}
+
 // ---------- Accueil ----------
 function showWelcome() {
   S.view = 'welcome';
@@ -121,7 +229,9 @@ function showWelcome() {
     h('div', { class: 'meta' }, 'Le reste, je m’en occupe'),
     h('div', { class: 'body' }, h('p', {}, 'Je te présente une seule personne. Vous ne vous voyez pas avant le soir du rendez-vous. Entre-temps, je vous envoie des cartes : un lieu, des règles, un objectif secret, et quatre jeux.')),
     card({ items: ['Tu dresses ton portrait, cinq minutes', 'Je trouve quelqu’un qui te correspond', 'Les cartes arrivent, au bon moment', 'Le soir venu, on joue'] }),
-    button('Créer mon portrait', () => showOnboarding()),
+    S.store?.needsAuth
+      ? [button('Créer un compte', () => showAuth('signup')), button('J’ai déjà un compte', () => showAuth('login'), 'link')]
+      : button('Créer mon portrait', () => showOnboarding()),
     !IS_REMOTE && h('p', { class: 'foot' }, 'Mode solo : la personne en face est simulée, pour tout tester.'),
     !standalone && h('div', { class: 'install' },
       installEvt ? button('Installer l’appli sur mon téléphone', async () => { installEvt.prompt(); installEvt = null; }, 'btn ghost')
@@ -134,7 +244,12 @@ function showOnboarding(edit = false) {
   S.view = 'onboarding';
   onboarding(root, {
     initial: edit ? S.profile : null,
-    onCancel: edit ? () => route() : () => showWelcome(),
+    onCancel: edit ? () => route() : async () => {
+      if (!S.store.needsAuth) return showWelcome();
+      if (await confirmSheet({ title: 'Te déconnecter ?', sub: 'Ton portrait n’est pas encore enregistré.', yes: 'Me déconnecter', no: 'Continuer mon portrait' })) {
+        await S.store.signOut(); S.uid = null; showAuth('login');
+      }
+    },
     onDone: async (p) => {
       S.profile = await S.store.saveProfile(p);
       if (edit) { toast('Portrait enregistré.'); return route(); }
@@ -145,33 +260,68 @@ function showOnboarding(edit = false) {
 }
 
 // ---------- Recherche ----------
-function showSearch(msg) {
+// Paliers de la recherche progressive (mêmes seuils que supabase/schema.sql).
+const STEPS = [
+  { at: 0, label: 'Précise' },
+  { at: 10, label: '10 min' },
+  { at: 60, label: '1 h' },
+  { at: 360, label: '6 h' },
+  { at: 1440, label: '24 h' },
+];
+
+function showSearch() {
   S.view = 'search';
-  const days = (S.profile.availability || []).sort().map((d) => weekday(new Date(2024, 0, 7 + d).getTime())).join(', ');
-  const note = h('p', { class: 'small', style: { textAlign: 'center' } }, msg || '');
+  S.searchBox = h('div', {});
   root.replaceChildren(h('main', { class: 'screen' },
     topbar(),
     h('div', { class: 'pulse' }, icon('heart')),
-    h('div', { class: 'eyebrow', style: { textAlign: 'center' } }, 'Patience'),
-    h('h1', { class: 'title', style: { textAlign: 'center', marginBottom: '22px' } }, 'Je cherche'),
-    h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, `Quelqu’un qui te ressemble assez, et pas trop. Près de toi, libre ${days || 'un soir'}.`)),
-    note,
+    h('div', { class: 'eyebrow', style: { alignSelf: 'center' } }, 'Recherche en cours'),
+    h('h1', { class: 'title', style: { textAlign: 'center', marginBottom: '14px' } }, 'Je cherche'),
+    h('div', { class: 'body', style: { textAlign: 'center' } },
+      h('p', {}, 'Je commence exigeant. Si personne ne correspond, j’élargis petit à petit.')),
+    S.searchBox,
     h('div', { class: 'spacer' }),
-    S.profile.paused && status('Ton profil est en pause.', 'pause'),
+    S.profile.paused ? status('Ton profil est en pause. Menu ☰ → Reprendre.', 'pause')
+      : h('p', { class: 'foot' }, IS_REMOTE ? 'Tu peux fermer l’appli : je continue de chercher.' : 'Mode solo : la personne en face est simulée.'),
   ));
-  S.searchNote = note;
+  renderSearch(S.lastSearch);
   setTimeout(trySearch, IS_REMOTE ? 300 : 2600);
+}
+
+function renderSearch(info) {
+  if (!S.searchBox || !info || info.level == null) return;
+  const lvl = Number(info.level) || 0;
+  const p = S.profile;
+  const mins = info.since ? (Date.now() - Date.parse(info.since)) / 60000 : 0;
+  const next = STEPS[lvl + 1];
+  const left = next ? Math.max(1, Math.round(next.at - mins)) : 0;
+  const leftTxt = left >= 60 ? `${Math.round(left / 60)} h` : `${left} min`;
+  S.searchBox.replaceChildren(
+    h('div', { class: 'progress', style: { margin: '18px 0 6px' } }, STEPS.map((_, k) => h('i', { class: k <= lvl ? 'on' : '' }))),
+    h('div', { class: 'range-row', style: { marginBottom: '14px' } }, h('span', {}, 'Précise'), h('span', {}, 'Large')),
+    h('ol', { class: 'list' },
+      [
+        `Jusqu’à ${info.km} km de toi`,
+        `Entre ${Math.max(18, p.ageMin - info.age_pad)} et ${p.ageMax + info.age_pad} ans`,
+        info.min_score > 0 ? `Compatibilité d’au moins ${info.min_score} %` : 'Toutes les compatibilités',
+        lvl < 2 ? 'Un soir libre en commun' : 'N’importe quel soir (samedi par défaut)',
+      ].map((t, i) => h('li', {}, h('span', { class: 'n' }, String(i + 1).padStart(2, '0')), h('span', {}, t)))),
+    h('p', { class: 'small', style: { textAlign: 'center', marginTop: '12px' } },
+      [info.waiting > 0 ? `${info.waiting} personne${info.waiting > 1 ? 's' : ''} qui pourrai${info.waiting > 1 ? 'ent' : 't'} te correspondre cherche${info.waiting > 1 ? 'nt' : ''} aussi.` : 'Personne d’autre ne cherche pour l’instant. Parle de l’appli autour de toi !',
+        next ? ` J’élargis dans ${leftTxt}.` : ' Recherche au plus large.'].join('')),
+  );
 }
 
 async function trySearch() {
   if (S.view !== 'search' || S.searching || S.profile.paused) return;
   S.searching = true;
   try {
-    const d = await S.store.findMatch();
-    if (d) { await route({ autoOpen: true }); return; }
-    if (S.searchNote) S.searchNote.textContent = 'Personne de libre pour l’instant. Je continue à chercher : laisse l’appli ouverte ou reviens plus tard.';
+    const r = await S.store.findMatch();
+    if (r?.date) { S.lastSearch = null; await route({ autoOpen: true }); return; }
+    S.lastSearch = r?.search;
+    renderSearch(S.lastSearch);
   } catch (e) {
-    if (S.searchNote) S.searchNote.textContent = 'Connexion difficile, je réessaie… (' + e.message + ')';
+    if (S.searchBox) S.searchBox.replaceChildren(h('p', { class: 'small', style: { textAlign: 'center' } }, 'Connexion difficile, je réessaie… (' + e.message + ')'));
   } finally { S.searching = false; }
 }
 
@@ -281,7 +431,7 @@ function openMenu() {
   const notif = notifState();
   sheet((close) => [
     h('h3', {}, CONFIG.APP_NAME),
-    h('p', { class: 'sub' }, IS_REMOTE ? `Connecté${forms(S.profile?.gender).e} · ${S.profile?.firstName || ''}` : 'Mode solo · la personne en face est simulée'),
+    h('p', { class: 'sub' }, IS_REMOTE ? `${S.profile?.firstName || ''} · ${S.store.email || ''}` : 'Mode solo · la personne en face est simulée'),
     item('home', 'Le fil', null, () => { close(); route(); }),
     item('user', 'Mon portrait', 'Modifier mes réponses', () => { close(); showOnboarding(true); }),
     item('bell', 'Notifications', notif === 'granted' ? 'Activées' : notif === 'denied' ? 'Bloquées dans les réglages du téléphone' : notif === 'unsupported' ? 'Installe l’appli sur l’écran d’accueil pour les recevoir' : 'Touche pour activer', async () => {
@@ -299,9 +449,15 @@ function openMenu() {
       close(); route();
     }),
     item('info', 'Comment ça marche', null, () => { close(); about(); }),
+    S.store.needsAuth && item('back', 'Me déconnecter', null, async () => {
+      close();
+      await S.store.signOut();
+      S.uid = null; S.profile = null; S.data = null;
+      showAuth('login');
+    }),
     item('trash', 'Supprimer mon compte', 'Efface tout, définitivement', async () => {
       close();
-      if (await confirmSheet({ title: 'Tout supprimer ?', sub: 'Ton portrait, tes dates et tes réponses seront effacés.', yes: 'Supprimer définitivement', danger: true })) {
+      if (await confirmSheet({ title: 'Tout supprimer ?', sub: 'Ton compte, ton portrait, tes dates et tes réponses seront effacés.', yes: 'Supprimer définitivement', danger: true })) {
         await S.store.resetAll();
         location.reload();
       }

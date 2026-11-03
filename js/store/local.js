@@ -74,7 +74,7 @@ export function createLocalStore() {
       if (!best) best = bestMatch(relaxedMe, open(candidates), exclude);
       // Tous déjà rencontrés : on recommence la liste.
       if (!best) best = bestMatch(relaxedMe, open(candidates), []);
-      if (!best) return null;
+      if (!best) return { search: {} };
       const createdAt = clock.now();
       const id = 'd-' + uid();
       const date = {
@@ -85,7 +85,7 @@ export function createLocalStore() {
       };
       s.dates = [...(s.dates || []), date];
       save(s);
-      return date;
+      return { date };
     },
 
     async getDate() {

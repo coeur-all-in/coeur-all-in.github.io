@@ -33,21 +33,34 @@ Les maquettes d'origine sont dans [`docs/cartes/`](docs/cartes).
 Tout est stocké sur le téléphone, la personne en face est **simulée** (10 profils fictifs dans `js/store/bots.js`).
 Le **mode démo** (dans le menu) ajoute un bouton « Avancer au prochain message » pour vivre toute la semaine en 2 minutes.
 
-### Mode multi-utilisateurs (Supabase, gratuit)
-1. Créer un projet sur [supabase.com](https://supabase.com).
-2. *Authentication → Sign In / Providers* : activer **Allow anonymous sign-ins**.
-3. *SQL Editor* : coller et exécuter [`supabase/schema.sql`](supabase/schema.sql).
-4. *Project Settings → API* : copier l'URL et la clé `anon` dans [`js/config.js`](js/config.js), commit, push.
+### Mode en ligne (Supabase) — actif
+1. *Authentication → Sign In / Providers → Email* : activé, **Confirm email désactivé**
+   (le serveur d'e-mails gratuit de Supabase n'envoie qu'aux membres du projet ; pour activer la confirmation,
+   brancher un SMTP comme Resend dans *Authentication → Emails → SMTP Settings*).
+2. *Authentication → URL Configuration* : Site URL = `https://coeur-all-in.github.io`.
+3. *SQL Editor* : exécuter [`supabase/schema.sql`](supabase/schema.sql). Le script peut être relancé à chaque mise à jour.
+4. L'URL et la clé publique sont dans [`js/config.js`](js/config.js).
 
-Le schéma contient le matching en SQL (`find_match()`), les règles de sécurité (chacun ne voit que son date,
-personne ne peut écrire à la place de l'autre) et le numéro qui ne se débloque qu'à 19h30 le jour J (`partner_phone()`).
-Il a été testé sur Postgres 16.
+Comptes : e-mail + mot de passe (8 caractères min.), mot de passe oublié, déconnexion, suppression du compte.
+Sécurité : règles RLS (chacun ne voit que son date), numéro débloqué à 19h30 le jour J (`partner_phone()`).
 
-## Matching
+## Matching : recherche progressive
 
-Filtres stricts dans les deux sens (genre recherché, tranche d'âge, distance), puis un score sur 100 :
-intention 20 · valeurs 20 · centres d'intérêt 15 · caractère 15 · ambitions 10 · enfants 10 · tabac/alcool 10.
-Les origines sont facultatives et **ne servent pas** au score (donnée sensible au sens du RGPD).
+Filtres stricts au début, puis élargis avec le temps d'attente de chaque personne (jugée avec son propre niveau) :
+
+| Attente | Distance | Âge | Compatibilité min | Soir commun |
+|---|---|---|---|---|
+| < 10 min | x1 | exact | 55 | obligatoire |
+| < 1 h | x1,5 | ± 2 ans | 40 | obligatoire |
+| < 6 h | x2 | ± 4 ans | 25 | non |
+| < 24 h | x3 | ± 6 ans | 0 | non |
+| au-delà | x5 (300 km max) | ± 10 ans | 0 | non |
+
+Jamais assouplis : le genre recherché (dans les deux sens), la majorité, ne jamais reproposer quelqu'un.
+Score sur 100 : intention 20 · valeurs 20 · centres d'intérêt 15 · caractère 15 · ambitions 10 · enfants 10 · tabac/alcool 10.
+Les origines ne servent pas au score (donnée sensible, RGPD).
+Une tâche planifiée (`pg_cron`, toutes les 5 min) matche les personnes en attente même appli fermée.
+Les comptes inactifs depuis 14 jours ne sont plus proposés.
 
 ## Notifications
 

@@ -1,6 +1,7 @@
--- Cœur All In — schéma Supabase (mode multi-utilisateurs)
--- À coller tel quel dans Supabase → SQL Editor → Run.
--- Pré-requis : Authentication → Sign In / Providers → « Allow anonymous sign-ins » activé.
+-- Cœur All In — schéma Supabase
+-- À coller tel quel dans Supabase → SQL Editor → Run. Peut être relancé sans risque (mise à jour).
+-- Pré-requis : Authentication → Sign In / Providers → Email activé, « Confirm email » désactivé
+-- (sinon chaque inscription attend un e-mail de confirmation).
 
 create extension if not exists pgcrypto;
 
@@ -58,6 +59,11 @@ create table if not exists public.reports (
   reason text,
   created_at timestamptz not null default now()
 );
+
+-- Recherche progressive : depuis quand la personne attend, et dernière ouverture de l'appli.
+alter table public.profiles add column if not exists searching_since timestamptz default now();
+alter table public.profiles add column if not exists last_seen timestamptz default now();
+create index if not exists profiles_searching_idx on public.profiles(searching_since) where searching_since is not null;
 
 -- ---------------------------------------------------------------- Helpers
 
@@ -124,50 +130,78 @@ language sql stable security definer set search_path = public as $$
       and d.date_at > now() - interval '2 days')
 $$;
 
--- ---------------------------------------------------------------- Matching
+-- ---------------------------------------------------------------- Matching progressif
+--
+-- Plus une personne attend, plus ses critères s'assouplissent :
+--   niveau | attente      | distance | âge     | compatibilité min | soir commun
+--   0      | < 10 min     | x1       | exact   | 55 / 100          | obligatoire
+--   1      | < 1 h        | x1,5     | ± 2 ans | 40                | obligatoire
+--   2      | < 6 h        | x2       | ± 4 ans | 25                | non
+--   3      | < 24 h       | x3       | ± 6 ans | 0                 | non
+--   4      | au-delà      | x5       | ± 10 ans| 0                 | non
+-- Jamais assoupli : le genre recherché (dans les deux sens), la majorité, ne pas revoir quelqu'un déjà proposé.
+-- Chaque personne est jugée avec SON propre niveau : on assouplit pour celui qui attend, pas pour l'autre.
 
--- Renvoie le date en cours de l'utilisateur, ou en crée un avec le meilleur profil compatible.
--- Renvoie null si personne n'est disponible pour l'instant (l'appli réessaie régulièrement).
-create or replace function public.find_match() returns uuid
+create or replace function public.search_level(since timestamptz) returns int
+language sql stable as $$
+  select case
+    when since is null or now() - since < interval '10 minutes' then 0
+    when now() - since < interval '1 hour' then 1
+    when now() - since < interval '6 hours' then 2
+    when now() - since < interval '24 hours' then 3
+    else 4 end
+$$;
+create or replace function public.lvl_km(l int) returns numeric language sql immutable as $$ select (array[1, 1.5, 2, 3, 5]::numeric[])[l + 1] $$;
+create or replace function public.lvl_age(l int) returns int language sql immutable as $$ select (array[0, 2, 4, 6, 10])[l + 1] $$;
+create or replace function public.lvl_score(l int) returns int language sql immutable as $$ select (array[55, 40, 25, 0, 0])[l + 1] $$;
+
+-- Cherche et crée un date pour `uid`. Usage interne (appelé par find_match et par la tâche planifiée).
+create or replace function public.match_for(uid uuid) returns uuid
 language plpgsql security definer set search_path = public as $$
 declare
   me profiles;
+  ml int;
   cand record;
-  existing uuid;
   common int[];
   d_day date;
-  d_at timestamptz;
   new_id uuid;
   objs text[] := array['vingt', 'souvenir', 'fourire', 'chanson', 'ailleurs', 'fierte', 'enfant', 'plat'];
   i int;
   j int;
   paris_today date := (now() at time zone 'Europe/Paris')::date;
 begin
-  select * into me from profiles where id = auth.uid() for update;
-  if me.id is null then raise exception 'Profil manquant'; end if;
+  select * into me from profiles where id = uid for update skip locked;
+  if me.id is null or not me.active or me.searching_since is null or public.is_busy(uid) then return null; end if;
+  ml := public.search_level(me.searching_since);
 
-  select d.id into existing from dates d
-  where (d.a = me.id or d.b = me.id) and not (me.id = any(d.closed_by)) and d.date_at > now() - interval '2 days'
-  order by d.created_at desc limit 1;
-  if existing is not null then return existing; end if;
-  if not me.active then return null; end if;
-
-  select p.*, public.match_score(me.data, p.data) as sc into cand
+  select p.id, p.availability, x.sc into cand
   from profiles p
+  cross join lateral (
+    select public.match_score(me.data, p.data) as sc,
+           public.search_level(p.searching_since) as pl,
+           public.km(me.lat, me.lng, p.lat, p.lng, me.city, p.city) as d,
+           extract(year from age(p.birthdate))::int as page,
+           extract(year from age(me.birthdate))::int as mage
+  ) x
   where p.id <> me.id and p.active
+    and p.searching_since is not null
+    and p.last_seen > now() - interval '14 days'
     and p.gender = any(me.seeking) and me.gender = any(p.seeking)
-    and extract(year from age(p.birthdate))::int between me.age_min and me.age_max
-    and extract(year from age(me.birthdate))::int between p.age_min and p.age_max
-    and public.km(me.lat, me.lng, p.lat, p.lng, me.city, p.city) <= least(me.max_km, p.max_km)
+    and x.page >= 18 and x.mage >= 18
+    and x.page between me.age_min - public.lvl_age(ml) and me.age_max + public.lvl_age(ml)
+    and x.mage between p.age_min - public.lvl_age(x.pl) and p.age_max + public.lvl_age(x.pl)
+    and x.d <= least(me.max_km * public.lvl_km(ml), p.max_km * public.lvl_km(x.pl), 300)
+    and x.sc >= greatest(public.lvl_score(ml), public.lvl_score(x.pl))
+    and (greatest(ml, x.pl) >= 2 or me.availability && p.availability)
     and not exists (select 1 from dates d where (d.a = me.id and d.b = p.id) or (d.a = p.id and d.b = me.id))
     and not public.is_busy(p.id)
-  order by sc desc, random()
+  order by x.sc desc, p.searching_since asc
   limit 1
   for update of p skip locked;
 
   if cand.id is null then return null; end if;
 
-  -- Jour du date : jeudi, vendredi ou samedi communs, au moins 3 jours après, à 20h (heure de Paris).
+  -- Jour du date : jeudi, vendredi ou samedi communs (samedi sinon), au moins 3 jours après, 20h heure de Paris.
   select array_agg(x) into common from unnest(array[6, 5, 4]) x
   where x = any(me.availability) and x = any(cand.availability);
   if common is null then common := array[6]; end if;
@@ -175,23 +209,85 @@ begin
     d_day := paris_today + k;
     exit when extract(dow from d_day)::int = any(common);
   end loop;
-  d_at := (d_day + time '20:00') at time zone 'Europe/Paris';
 
   i := 1 + floor(random() * array_length(objs, 1))::int;
   j := 1 + floor(random() * (array_length(objs, 1) - 1))::int;
   if j >= i then j := j + 1; end if;
 
   insert into dates (a, b, date_at, objectives, score)
-  values (me.id, cand.id, d_at, jsonb_build_object(me.id::text, objs[i], cand.id::text, objs[j]), cand.sc)
+  values (me.id, cand.id, (d_day + time '20:00') at time zone 'Europe/Paris',
+          jsonb_build_object(me.id::text, objs[i], cand.id::text, objs[j]), cand.sc)
   returning id into new_id;
+  update profiles set searching_since = null where id in (me.id, cand.id);
   return new_id;
+end $$;
+
+-- Appelée par l'appli : renvoie le date en cours, en crée un si possible,
+-- sinon l'état de la recherche (niveau d'assouplissement) pour l'afficher.
+drop function if exists public.find_match();
+create or replace function public.find_match() returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  me profiles;
+  existing uuid;
+  new_id uuid;
+  l int;
+begin
+  select * into me from profiles where id = auth.uid();
+  if me.id is null then raise exception 'Profil manquant'; end if;
+
+  select d.id into existing from dates d
+  where (d.a = me.id or d.b = me.id) and not (me.id = any(d.closed_by)) and d.date_at > now() - interval '2 days'
+  order by d.created_at desc limit 1;
+  if existing is not null then return jsonb_build_object('date_id', existing); end if;
+
+  update profiles set last_seen = now(), searching_since = coalesce(searching_since, now()) where id = me.id;
+  if not me.active then return jsonb_build_object('date_id', null, 'paused', true); end if;
+
+  new_id := public.match_for(me.id);
+  if new_id is not null then return jsonb_build_object('date_id', new_id); end if;
+
+  select public.search_level(searching_since) into l from profiles where id = me.id;
+  return jsonb_build_object(
+    'date_id', null,
+    'level', l,
+    'since', (select searching_since from profiles where id = me.id),
+    'km', round(me.max_km * public.lvl_km(l)),
+    'age_pad', public.lvl_age(l),
+    'min_score', public.lvl_score(l),
+    'waiting', (select count(*) from profiles p where p.active and p.searching_since is not null and p.id <> me.id
+                and p.last_seen > now() - interval '14 days' and p.gender = any(me.seeking) and me.gender = any(p.seeking))
+  );
+end $$;
+
+-- Tâche planifiée : toutes les 5 minutes, tente un match pour chaque personne en attente,
+-- en commençant par celles qui attendent depuis le plus longtemps. Marche même appli fermée.
+create or replace function public.match_waiting() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  n int := 0;
+begin
+  for r in select id from profiles
+           where active and searching_since is not null and last_seen > now() - interval '14 days'
+           order by searching_since loop
+    if public.match_for(r.id) is not null then n := n + 1; end if;
+  end loop;
+  return n;
 end $$;
 
 -- Refermer un date de son côté (refus, fin de soirée…). On peut ensuite rechercher.
 create or replace function public.close_date(p_date uuid) returns void
 language sql security definer set search_path = public as $$
   update dates set closed_by = array_append(closed_by, auth.uid())
-  where id = p_date and auth.uid() in (a, b) and not (auth.uid() = any(closed_by))
+  where id = p_date and auth.uid() in (a, b) and not (auth.uid() = any(closed_by));
+  update profiles set searching_since = now(), last_seen = now() where id = auth.uid();
+$$;
+
+-- Supprimer son compte : efface l'utilisateur et, en cascade, son profil, ses dates et ses réponses.
+create or replace function public.delete_account() returns void
+language sql security definer set search_path = public as $$
+  delete from auth.users where id = auth.uid()
 $$;
 
 -- Le numéro de l'autre, seulement à partir de 19h30 le jour J, et si les deux ont dit oui.
@@ -254,8 +350,27 @@ drop policy if exists "signalement: créer" on public.reports;
 create policy "signalement: créer" on public.reports for insert with check (reporter = auth.uid());
 
 revoke all on function public.find_match() from public, anon;
+revoke all on function public.match_for(uuid) from public, anon, authenticated;
+revoke all on function public.match_waiting() from public, anon, authenticated;
+revoke all on function public.delete_account() from public, anon;
+grant execute on function public.delete_account() to authenticated;
 revoke all on function public.close_date(uuid) from public, anon;
 revoke all on function public.partner_phone(uuid) from public, anon;
 grant execute on function public.find_match() to authenticated;
 grant execute on function public.close_date(uuid) to authenticated;
 grant execute on function public.partner_phone(uuid) to authenticated;
+
+-- ---------------------------------------------------------------- Tâche planifiée (pg_cron)
+do $$
+begin
+  create extension if not exists pg_cron;
+  if exists (select 1 from cron.job where jobname = 'cai-match') then
+    perform cron.unschedule('cai-match');
+  end if;
+  perform cron.schedule('cai-match', '*/5 * * * *', 'select public.match_waiting()');
+exception when others then
+  raise notice 'pg_cron indisponible (%). Le matching se fera quand les gens ouvrent l''appli.', sqlerrm;
+end $$;
+
+-- Optionnel : supprimer les anciens comptes de test anonymes (avant les comptes e-mail).
+-- delete from auth.users where is_anonymous;

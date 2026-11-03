@@ -1,18 +1,43 @@
-// Mode multi-utilisateurs : Supabase (Postgres + auth anonyme). Voir supabase/schema.sql.
+// Mode en ligne : Supabase (Postgres + comptes e-mail / mot de passe). Voir supabase/schema.sql.
 import { CONFIG } from '../config.js';
 
 const SDK = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/+esm';
 
+// Messages d'erreur Supabase → français.
+export function frError(e) {
+  const m = String(e?.message || e || '');
+  if (/invalid login credentials/i.test(m)) return 'E-mail ou mot de passe incorrect.';
+  if (/already registered|already been registered|user already exists/i.test(m)) return 'Un compte existe déjà avec cet e-mail. Connecte-toi.';
+  if (/password should be|password.*(short|least)/i.test(m)) return 'Mot de passe trop court (8 caractères minimum).';
+  if (/email not confirmed/i.test(m)) return 'Ton e-mail n’est pas encore confirmé : clique sur le lien reçu.';
+  if (/rate limit|too many|security purposes/i.test(m)) return 'Trop de tentatives. Réessaie dans quelques minutes.';
+  if (/invalid.*email|email.*invalid|unable to validate email/i.test(m)) return 'Adresse e-mail invalide.';
+  if (/same.*password|different from the old/i.test(m)) return 'Choisis un mot de passe différent de l’ancien.';
+  if (/failed to fetch|network/i.test(m)) return 'Pas de connexion. Vérifie ton réseau.';
+  if (/signups not allowed|signup.*disabled/i.test(m)) return 'Les inscriptions sont fermées pour le moment.';
+  return m || 'Une erreur est survenue.';
+}
+
 export async function createSupabaseStore() {
   const { createClient } = await import(SDK);
   const sb = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
-    auth: { persistSession: true, autoRefreshToken: true, storageKey: 'cai.auth' },
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'cai.auth' },
   });
   let userId = null;
+  let email = null;
   let currentDateId = null;
+  let recovery = /type=recovery/.test(location.hash);
+  const listeners = new Set();
+
+  sb.auth.onAuthStateChange((event, session) => {
+    userId = session?.user?.id || null;
+    email = session?.user?.email || null;
+    if (event === 'PASSWORD_RECOVERY') recovery = true;
+    listeners.forEach((fn) => fn(event, session));
+  });
 
   const check = ({ data, error }) => {
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(frError(error));
     return data;
   };
 
@@ -28,22 +53,57 @@ export async function createSupabaseStore() {
 
   return {
     mode: 'remote',
+    needsAuth: true,
+    get email() { return email; },
+    get recovery() { return recovery; },
+    onAuth(fn) { listeners.add(fn); },
+
     async init() {
-      let { data: { session } } = await sb.auth.getSession();
-      if (!session) {
-        const res = await sb.auth.signInAnonymously();
-        if (res.error) throw new Error('Connexion impossible : ' + res.error.message);
-        session = res.data.session;
-      }
-      userId = session.user.id;
+      const { data: { session } } = await sb.auth.getSession();
+      userId = session?.user?.id || null;
+      email = session?.user?.email || null;
+      // Ancienne session anonyme (avant les comptes) : on repart proprement.
+      if (session?.user?.is_anonymous) { await sb.auth.signOut(); userId = null; }
       return { userId };
     },
 
+    // ---------- Compte ----------
+    async signUp(mail, password) {
+      const data = check(await sb.auth.signUp({
+        email: mail, password, options: { emailRedirectTo: location.origin + location.pathname },
+      }));
+      if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+        throw new Error('Un compte existe déjà avec cet e-mail. Connecte-toi.');
+      }
+      userId = data.session?.user?.id || null;
+      return { confirmEmail: !data.session };
+    },
+    async signIn(mail, password) {
+      const data = check(await sb.auth.signInWithPassword({ email: mail, password }));
+      userId = data.user.id;
+      email = data.user.email;
+      return { userId };
+    },
+    async resetPassword(mail) {
+      check(await sb.auth.resetPasswordForEmail(mail, { redirectTo: location.origin + location.pathname }));
+    },
+    async updatePassword(password) {
+      check(await sb.auth.updateUser({ password }));
+      recovery = false;
+      history.replaceState(null, '', location.pathname);
+    },
+    async signOut() {
+      await sb.auth.signOut();
+      userId = null;
+      currentDateId = null;
+    },
+
+    // ---------- Profil ----------
     async getProfile() {
-      const row = check(await sb.from('profiles').select('data').eq('id', userId).maybeSingle());
+      const row = check(await sb.from('profiles').select('data, active').eq('id', userId).maybeSingle());
       if (!row) return null;
       const c = check(await sb.from('contacts').select('phone').eq('id', userId).maybeSingle());
-      return { ...row.data, id: userId, phone: c?.phone || '' };
+      return { ...row.data, id: userId, phone: c?.phone || '', paused: row.active === false };
     },
 
     async saveProfile(p) {
@@ -57,9 +117,12 @@ export async function createSupabaseStore() {
       return { ...p, id: userId };
     },
 
+    // ---------- Matching ----------
+    // Renvoie { date } si un date existe / vient d'être créé, sinon { search } (état de la recherche).
     async findMatch() {
-      const id = check(await sb.rpc('find_match'));
-      return id ? (await this.getDate())?.date : null;
+      const res = check(await sb.rpc('find_match'));
+      if (res?.date_id) return { date: (await this.getDate())?.date };
+      return { search: res || {} };
     },
 
     async getDate() {
@@ -102,7 +165,7 @@ export async function createSupabaseStore() {
     },
 
     async resetAll() {
-      try { await sb.from('profiles').delete().eq('id', userId); } catch { /* on continue */ }
+      check(await sb.rpc('delete_account'));
       await sb.auth.signOut();
       try { localStorage.clear(); } catch { /* rien */ }
     },
