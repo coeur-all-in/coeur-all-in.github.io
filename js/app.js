@@ -1,7 +1,7 @@
 // Cœur All In — contrôleur principal.
 import { CONFIG, IS_REMOTE } from './config.js';
 import { forms, portraitText } from './content.js';
-import { askPermission, downloadCalendar, notifState, notifyNew, setBadge } from './notify.js';
+import { askPermission, downloadCalendar, enablePush, isIosBrowser, notifState, notifyNew, setBadge } from './notify.js';
 import { CARDS, TILE, markDone, needsAction } from './screens/cards.js';
 import { onboarding } from './screens/onboarding.js';
 import { createStore } from './store/index.js';
@@ -114,6 +114,7 @@ async function refresh(force = false) {
 
 async function afterLogin() {
   S.profile = await S.store.getProfile();
+  if (S.profile) enablePush(S.store); // resynchronise l'abonnement si déjà autorisé
   if (!S.profile) return S.store.needsAuth ? showOnboarding() : showWelcome();
   await route({ autoOpen: true });
 }
@@ -253,10 +254,28 @@ function showOnboarding(edit = false) {
     onDone: async (p) => {
       S.profile = await S.store.saveProfile(p);
       if (edit) { toast('Portrait enregistré.'); return route(); }
-      if (notifState() === 'default') await askPermission();
+      if (S.store.pushKey) await enablePush(S.store, { ask: true });
+      else if (notifState() === 'default') await askPermission();
       showSearch();
     },
   });
+}
+
+// Bandeau « Active les notifications » tant que ce n'est pas fait.
+function pushBanner() {
+  if (!S.store?.pushKey) return null;
+  const st = notifState();
+  if (st === 'granted' || st === 'denied') return null;
+  const ios = isIosBrowser();
+  return h('div', { class: 'install', style: { marginTop: '18px' } },
+    h('p', { style: { margin: '0 0 10px' } }, ios
+      ? 'Pour être prévenu·e même appli fermée : installe l’appli (Partager → « Sur l’écran d’accueil »), puis ouvre-la depuis l’icône.'
+      : 'Active les notifications pour être prévenu·e du match et de chaque carte, même appli fermée.'),
+    !ios && button('Activer les notifications', async (e) => {
+      const r = await enablePush(S.store, { ask: true });
+      toast(r === 'ok' ? 'Notifications activées.' : r === 'denied' ? 'Refusées. Réactive-les dans les réglages du téléphone.' : 'Pas encore possible, réessaie dans une minute.');
+      if (r === 'ok' || r === 'denied') e.target.closest('.install')?.remove();
+    }, 'btn quiet'));
 }
 
 // ---------- Recherche ----------
@@ -280,6 +299,7 @@ function showSearch() {
     h('div', { class: 'body', style: { textAlign: 'center' } },
       h('p', {}, 'Je commence exigeant. Si personne ne correspond, j’élargis petit à petit.')),
     S.searchBox,
+    pushBanner(),
     h('div', { class: 'spacer' }),
     S.profile.paused ? status('Ton profil est en pause. Menu ☰ → Reprendre.', 'pause')
       : h('p', { class: 'foot' }, IS_REMOTE ? 'Tu peux fermer l’appli : je continue de chercher.' : 'Mode solo : la personne en face est simulée.'),
@@ -388,7 +408,8 @@ function showFeed({ keepScroll } = {}) {
     h('div', { class: 'eyebrow' }, S.data.partner ? `Ton date avec ${S.data.partner.firstName}` : 'Ton date'),
     h('h1', { class: 'title', style: { fontSize: '40px', marginBottom: '22px' } }, `${dayLabel(date.dateAt)}`),
     nextBox,
-    h('div', { class: 'tiles' }, tiles),
+    pushBanner(),
+    h('div', { class: 'tiles', style: { marginTop: '18px' } }, tiles),
     doneBar,
     demoOn() && demoPanel(),
     h('p', { class: 'foot' }, during ? 'On n’utilise pas son téléphone, sauf pour mes messages.' : `Je t’écris au bon moment. ${P.Il} reçoit les siens en même temps.`),
@@ -434,10 +455,19 @@ function openMenu() {
     h('p', { class: 'sub' }, IS_REMOTE ? `${S.profile?.firstName || ''} · ${S.store.email || ''}` : 'Mode solo · la personne en face est simulée'),
     item('home', 'Le fil', null, () => { close(); route(); }),
     item('user', 'Mon portrait', 'Modifier mes réponses', () => { close(); showOnboarding(true); }),
-    item('bell', 'Notifications', notif === 'granted' ? 'Activées' : notif === 'denied' ? 'Bloquées dans les réglages du téléphone' : notif === 'unsupported' ? 'Installe l’appli sur l’écran d’accueil pour les recevoir' : 'Touche pour activer', async () => {
-      const r = await askPermission();
-      toast(r === 'granted' ? 'Notifications activées.' : 'Notifications non autorisées.');
+    item('bell', 'Notifications', isIosBrowser() ? 'Sur iPhone : installe d’abord l’appli sur l’écran d’accueil'
+      : notif === 'granted' ? 'Activées, même appli fermée' : notif === 'denied' ? 'Bloquées : à réactiver dans les réglages du téléphone' : 'Touche pour activer', async () => {
       close();
+      const r = await enablePush(S.store, { ask: true });
+      const msg = {
+        ok: 'Notifications activées : je te préviens même appli fermée.',
+        'ios-install': 'Sur iPhone : Partager → « Sur l’écran d’accueil », puis ouvre l’appli depuis l’icône et réessaie.',
+        denied: 'Notifications refusées. Réactive-les dans les réglages du téléphone.',
+        'not-ready': 'Le serveur de notifications démarre, réessaie dans une minute.',
+        'no-server': notifState() === 'granted' ? 'Notifications activées.' : 'Notifications non autorisées.',
+        unsupported: 'Ce navigateur ne gère pas les notifications.',
+      }[r] || 'Impossible d’activer les notifications pour le moment.';
+      toast(msg);
     }),
     hasDate && item('cal', 'Rappels dans mon calendrier', 'Chaque message à l’heure exacte, même appli fermée', () => { downloadCalendar(S.data.date, S.uid); close(); }),
     item('edit', 'Apparence', THEMES.find((t) => t.id === currentTheme())?.label, () => { close(); themeSheet(); }),

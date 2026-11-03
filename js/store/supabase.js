@@ -92,7 +92,24 @@ export async function createSupabaseStore() {
       recovery = false;
       history.replaceState(null, '', location.pathname);
     },
+    // ---------- Notifications push ----------
+    async pushKey() {
+      return check(await sb.rpc('push_public_key'));
+    },
+    async savePush(sub) {
+      const j = sub.toJSON();
+      check(await sb.from('push_subscriptions').upsert({ endpoint: j.endpoint, user_id: userId, p256dh: j.keys.p256dh, auth: j.keys.auth }));
+    },
+    async removePush(endpoint) {
+      await sb.from('push_subscriptions').delete().eq('endpoint', endpoint);
+    },
+
     async signOut() {
+      try {
+        const reg = await navigator.serviceWorker?.getRegistration();
+        const sub = await reg?.pushManager?.getSubscription();
+        if (sub) { await this.removePush(sub.endpoint); await sub.unsubscribe(); }
+      } catch { /* rien */ }
       await sb.auth.signOut();
       userId = null;
       currentDateId = null;

@@ -19,6 +19,47 @@ export async function askPermission() {
   try { return await Notification.requestPermission(); } catch { return 'denied'; }
 }
 
+export function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && notifSupported();
+}
+
+export function isIosBrowser() {
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  return ios && !standalone;
+}
+
+function keyBytes(b64) {
+  const s = b64.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((b64.length + 3) % 4);
+  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+}
+
+// Abonne ce téléphone aux notifications push (appli fermée). Renvoie 'ok' ou une raison.
+export async function enablePush(store, { ask = false } = {}) {
+  if (!store?.pushKey) return 'no-server';
+  if (!pushSupported()) return isIosBrowser() ? 'ios-install' : 'unsupported';
+  let perm = Notification.permission;
+  if (perm === 'default' && ask) perm = await askPermission();
+  if (perm !== 'granted') return perm;
+  try {
+    const key = await store.pushKey();
+    if (!key) return 'not-ready';
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    const want = keyBytes(key);
+    if (sub) {
+      const cur = sub.options?.applicationServerKey && new Uint8Array(sub.options.applicationServerKey);
+      if (cur && (cur.length !== want.length || cur.some((b, i) => b !== want[i]))) { await sub.unsubscribe(); sub = null; }
+    }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: want });
+    await store.savePush(sub);
+    return 'ok';
+  } catch (e) {
+    console.warn('push', e);
+    return 'error';
+  }
+}
+
 export async function show(body, tag) {
   if (notifState() === 'granted') {
     try {

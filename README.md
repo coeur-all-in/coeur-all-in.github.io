@@ -64,12 +64,18 @@ Les comptes inactifs depuis 14 jours ne sont plus proposés.
 
 ## Notifications
 
-- Quand l'appli est ouverte ou revient au premier plan : notification système + pastille sur l'icône.
-- **Rappels calendrier** (menu → « Rappels dans mon calendrier ») : un fichier `.ics` avec une alerte à chaque carte,
-  fiable même appli fermée, sur iPhone comme sur Android.
-- Push serveur (appli fermée) : le service worker gère déjà l'événement `push`. Il reste à ajouter une fonction
-  planifiée (Supabase Edge Function + clés VAPID) qui envoie les messages aux heures de `timeline.js`. Prochaine étape conseillée.
-  Sur iPhone, les notifications web ne marchent qu'une fois l'appli ajoutée à l'écran d'accueil (iOS 16.4+).
+- **Push (appli fermée)** : chaque minute, `pg_cron` appelle la fonction Edge [`push`](supabase/functions/push/index.ts),
+  qui récupère les messages dus via `due_pushes()` (match trouvé, puis chaque carte à son heure, heure de Paris)
+  et les envoie à tous les appareils abonnés (Web Push chiffré, VAPID, sans dépendance).
+  Les clés VAPID sont générées automatiquement au premier passage et stockées dans `push_config` (lisible seulement côté serveur).
+  Sur iPhone, il faut iOS 16.4+ et l'appli **installée sur l'écran d'accueil**.
+- **Dans l'appli** : notification + pastille sur l'icône quand une carte arrive.
+- **Rappels calendrier** (menu) : fichier `.ics` avec une alerte par carte.
+
+### Déployer la fonction push
+1. *Database → Extensions* : activer `pg_cron` et `pg_net`, puis relancer `supabase/schema.sql`.
+2. *Edge Functions → Deploy a new function → Via Editor* : nom `push`, coller `supabase/functions/push/index.ts`, Deploy.
+3. Dans les détails de la fonction : désactiver **Enforce JWT Verification** (la fonction vérifie son propre secret).
 
 ## Lancer en local
 

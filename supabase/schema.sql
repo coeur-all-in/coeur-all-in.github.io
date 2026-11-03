@@ -374,3 +374,133 @@ end $$;
 
 -- Optionnel : supprimer les anciens comptes de test anonymes (avant les comptes e-mail).
 -- delete from auth.users where is_anonymous;
+
+-- ================================================================ Notifications push
+-- Chaque minute : due_pushes() calcule les messages à envoyer (match, puis chaque carte à son heure),
+-- puis la fonction Edge « push » les envoie aux téléphones abonnés. Voir supabase/functions/push.
+
+create table if not exists public.push_subscriptions (
+  endpoint text primary key,
+  user_id uuid not null references auth.users on delete cascade,
+  p256dh text not null,
+  auth text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists push_subscriptions_user_idx on public.push_subscriptions(user_id);
+
+-- Messages déjà envoyés (un seul envoi par carte et par personne).
+create table if not exists public.push_log (
+  date_id uuid not null references public.dates(id) on delete cascade,
+  user_id uuid not null references auth.users on delete cascade,
+  key text not null,
+  sent_at timestamptz not null default now(),
+  primary key (date_id, user_id, key)
+);
+
+-- Clés VAPID (générées automatiquement par la fonction push au premier passage) et secret de la tâche planifiée.
+create table if not exists public.push_config (
+  id int primary key default 1 check (id = 1),
+  vapid_public text,
+  vapid_private_jwk jsonb,
+  cron_secret text not null default encode(gen_random_bytes(24), 'hex'),
+  function_url text
+);
+insert into public.push_config (id, function_url)
+values (1, 'https://tdkxdhzdiuhlhfiyharv.supabase.co/functions/v1/push')
+on conflict (id) do nothing;
+
+alter table public.push_subscriptions enable row level security;
+alter table public.push_log enable row level security;
+alter table public.push_config enable row level security;   -- aucune règle : lisible seulement côté serveur
+revoke all on public.push_config from anon, authenticated;
+revoke all on public.push_log from anon, authenticated;
+
+drop policy if exists "push: mes abonnements" on public.push_subscriptions;
+create policy "push: mes abonnements" on public.push_subscriptions for all
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- La clé publique, pour que l'appli puisse s'abonner.
+create or replace function public.push_public_key() returns text
+language sql stable security definer set search_path = public as $$
+  select vapid_public from push_config where id = 1
+$$;
+grant execute on function public.push_public_key() to anon, authenticated;
+
+-- Messages dus maintenant. Les note comme envoyés et renvoie, pour chaque personne, le plus récent
+-- (si plusieurs cartes se sont débloquées d'un coup, un seul message). Ignore ce qui a plus de 3 h.
+-- Les heures suivent js/timeline.js, en heure de Paris.
+create or replace function public.due_pushes() returns table (user_id uuid, date_id uuid, key text, body text)
+language plpgsql security definer set search_path = public as $$
+begin
+  return query
+  with d as (
+    select dt.id, dt.a, dt.b, dt.created_at, dt.closed_by, (dt.date_at at time zone 'Europe/Paris')::date as dday
+    from dates dt
+    where dt.date_at > now() - interval '2 days'
+  ),
+  p as (
+    select d.*, u.uid, case when u.uid = d.a then d.b else d.a end as other
+    from d cross join lateral (values (d.a), (d.b)) as u(uid)
+    where not (u.uid = any(d.closed_by))
+  ),
+  s as (
+    select p.*,
+      (select count(*) = 2 from answers x where x.date_id = p.id and x.key = 'accept' and x.value = 'true'::jsonb) as both_ok,
+      (select max(x.updated_at) from answers x where x.date_id = p.id and x.key = 'accept') as ok_at,
+      (select count(*) = 2 from answers x where x.date_id = p.id and x.key = 'again') as both_again,
+      (select max(x.updated_at) from answers x where x.date_id = p.id and x.key = 'again') as again_at
+    from p
+  ),
+  m as (
+    select s.id as m_date, s.uid as m_user, k.key as m_key, k.at as m_at, k.body as m_body
+    from s cross join lateral (values
+      ('invite',   s.created_at, 'Quelqu’un a pensé à toi. Ouvre vite.', true),
+      ('cadrage',  greatest(s.created_at, s.ok_at), 'C’est calé : vous avez dit oui tous les deux.', s.both_ok),
+      ('tonTour',  greatest(s.created_at, ((s.dday - 3) + time '10:00') at time zone 'Europe/Paris'), 'À ton tour. Réponse attendue avant demain midi.', s.both_ok),
+      ('phrase',   greatest(s.created_at + interval '2 hours', ((s.dday - 2) + time '12:00') at time zone 'Europe/Paris'), 'Ce qu’on a écrit pour toi est arrivé.', s.both_ok),
+      ('lieu',     ((s.dday - 1) + time '20:00') at time zone 'Europe/Paris', 'Le lieu est fixé. Et ton pari t’attend.', s.both_ok),
+      ('regles',   (s.dday + time '10:00') at time zone 'Europe/Paris', 'Les règles, avant ce soir.', s.both_ok),
+      ('objectif', (s.dday + time '14:00') at time zone 'Europe/Paris', 'Ton objectif secret. Personne d’autre ne le sait.', s.both_ok),
+      ('numeros',  (s.dday + time '19:30') at time zone 'Europe/Paris', 'Vos numéros, juste pour se trouver.', s.both_ok),
+      ('jeu1',     (s.dday + time '20:30') at time zone 'Europe/Paris', 'Premier jeu.', s.both_ok),
+      ('jeu2',     (s.dday + time '21:00') at time zone 'Europe/Paris', 'Deuxième jeu.', s.both_ok),
+      ('jeu3',     (s.dday + time '21:30') at time zone 'Europe/Paris', 'Troisième jeu. Et vous pouvez parler boulot.', s.both_ok),
+      ('jeu4',     (s.dday + time '22:00') at time zone 'Europe/Paris', 'Quatrième jeu.', s.both_ok),
+      ('pari',     (s.dday + time '22:15') at time zone 'Europe/Paris', 'On rouvre les paris.', s.both_ok),
+      ('reveal',   (s.dday + time '22:40') at time zone 'Europe/Paris', 'On révèle les objectifs.', s.both_ok),
+      ('apres',    ((s.dday + 1) + time '11:00') at time zone 'Europe/Paris', 'Et maintenant ? Une dernière question.', s.both_ok),
+      ('verdict',  greatest(((s.dday + 1) + time '11:00') at time zone 'Europe/Paris', s.again_at), 'Vous avez répondu tous les deux.', s.both_again)
+    ) as k(key, at, body, ready)
+    where k.ready and k.at <= now()
+  ),
+  ins as (
+    insert into push_log (date_id, user_id, key)
+    select m.m_date, m.m_user, m.m_key from m
+    on conflict do nothing
+    returning push_log.date_id, push_log.user_id, push_log.key
+  )
+  select distinct on (m.m_user) m.m_user, m.m_date, m.m_key, m.m_body
+  from ins join m on m.m_date = ins.date_id and m.m_user = ins.user_id and m.m_key = ins.key
+  where m.m_at > now() - interval '3 hours'
+  order by m.m_user, m.m_at desc;
+end $$;
+revoke all on function public.due_pushes() from public, anon, authenticated;
+
+-- Tâche planifiée : chaque minute, réveille la fonction push (pg_net + pg_cron).
+do $$
+begin
+  create extension if not exists pg_net;
+  create extension if not exists pg_cron;
+  if exists (select 1 from cron.job where jobname = 'cai-push') then
+    perform cron.unschedule('cai-push');
+  end if;
+  perform cron.schedule('cai-push', '* * * * *', $job$
+    select net.http_post(
+      url := (select function_url from public.push_config where id = 1),
+      headers := jsonb_build_object('Content-Type', 'application/json',
+                                    'x-cron-secret', (select cron_secret from public.push_config where id = 1)),
+      body := '{}'::jsonb)
+  $job$);
+exception when others then
+  raise notice 'pg_net / pg_cron indisponible (%). Active-les dans Database → Extensions puis relance ce script.', sqlerrm;
+end $$;
