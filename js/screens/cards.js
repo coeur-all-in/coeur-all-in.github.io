@@ -346,7 +346,7 @@ function timerSheet(seconds) {
   let id;
   const C = 2 * Math.PI * 82;
   const num = h('div', { class: 'num' }, String(left));
-  const ring = h('div', { class: 'ring', html: `<svg viewBox="0 0 180 180"><circle cx="90" cy="90" r="82" stroke="rgba(241,228,218,.12)" stroke-width="5" fill="none"/><circle class="arc" cx="90" cy="90" r="82" stroke="#f0906c" stroke-width="5" fill="none" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="0" style="transition: stroke-dashoffset 1s linear"/></svg>` }, num);
+  const ring = h('div', { class: 'ring', html: `<svg viewBox="0 0 180 180"><circle cx="90" cy="90" r="82" class="track" stroke="currentColor" stroke-width="5" fill="none"/><circle class="arc" cx="90" cy="90" r="82" stroke="currentColor" stroke-width="5" fill="none" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="0" style="transition: stroke-dashoffset 1s linear"/></svg>` }, num);
   const msg = h('p', { class: 'sub', style: { textAlign: 'center' } }, 'Sans parler, en vous regardant.');
   sheet((close) => {
     id = setInterval(() => {

@@ -290,6 +290,7 @@ function openMenu() {
       close();
     }),
     hasDate && item('cal', 'Rappels dans mon calendrier', 'Chaque message à l’heure exacte, même appli fermée', () => { downloadCalendar(S.data.date, S.uid); close(); }),
+    item('edit', 'Apparence', THEMES.find((t) => t.id === currentTheme())?.label, () => { close(); themeSheet(); }),
     item('clock', 'Mode démo', demoOn() ? 'Activé : tu peux avancer dans le temps' : 'Désactivé', () => { pref.set('demo', !demoOn()); if (!demoOn()) clock.reset(); close(); route(); }),
     hasDate && item('shield', 'Un souci avec ce date ?', 'Annuler, signaler, se protéger', () => { close(); safety(); }),
     item('pause', S.profile?.paused ? 'Reprendre les rencontres' : 'Mettre en pause', 'On ne te proposera plus personne', async () => {
@@ -359,10 +360,38 @@ function about() {
   ]);
 }
 
+// ---------- Thèmes ----------
+export const THEMES = [
+  { id: 'creme', label: 'Crème', bg: '#faf6f1', swatch: 'linear-gradient(135deg,#ffb86b,#ff5a47 60%,#1d1a17 60%)' },
+  { id: 'minuit', label: 'Minuit', bg: '#09090f', swatch: 'linear-gradient(135deg,#ff4d8d,#7c5cff 60%,#09090f 60%)' },
+  { id: 'sorbet', label: 'Sorbet', bg: '#f2efff', swatch: 'linear-gradient(135deg,#c8f53c,#6a46ff 60%,#17112e 60%)' },
+];
+const currentTheme = () => document.documentElement.getAttribute('data-theme') || 'creme';
+function applyTheme(id) {
+  const t = THEMES.find((x) => x.id === id) || THEMES[0];
+  document.documentElement.setAttribute('data-theme', t.id);
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', t.bg);
+  pref.set('theme', t.id);
+}
+applyTheme(pref.get('theme', 'creme'));
+
+function themeSheet() {
+  sheet((close) => {
+    const grid = h('div', { class: 'themes' });
+    const render = () => grid.replaceChildren(...THEMES.map((t) => h('button', {
+      class: 'theme-pick', type: 'button', 'aria-pressed': String(currentTheme() === t.id),
+      onclick: () => { applyTheme(t.id); render(); },
+    }, h('i', { style: { background: t.swatch } }), t.label)));
+    render();
+    return [h('h3', {}, 'Apparence'), h('p', { class: 'sub' }, 'Choisis l’ambiance de l’appli. Tu peux changer quand tu veux.'), grid,
+      h('div', { style: { height: '18px' } }), button('Terminé', () => { close(); route(); })];
+  });
+}
+
 // ---------- Divers ----------
 function logo() {
   const s = document.createElement('span');
-  s.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="none" stroke="#f0906c" stroke-width="1.3" stroke-dasharray="2.2 2.2"/><path d="M12 17.2s-4.6-2.8-5.7-5.6C5.5 9.6 6.7 7.4 8.9 7.4c1.2 0 2.2.7 3.1 1.8.9-1.1 1.9-1.8 3.1-1.8 2.2 0 3.4 2.2 2.6 4.2-1.1 2.8-5.7 5.6-5.7 5.6z" fill="#f0906c"/></svg>';
+  s.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="2.2 2.2"/><path d="M12 17.2s-4.6-2.8-5.7-5.6C5.5 9.6 6.7 7.4 8.9 7.4c1.2 0 2.2.7 3.1 1.8.9-1.1 1.9-1.8 3.1-1.8 2.2 0 3.4 2.2 2.6 4.2-1.1 2.8-5.7 5.6-5.7 5.6z" fill="currentColor"/></svg>';
   return s.firstChild;
 }
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
