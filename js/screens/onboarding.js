@@ -177,6 +177,35 @@ function steps(p) {
       },
     },
     {
+      eyebrow: 'Qui tu aimerais rencontrer', title: 'Ton type',
+      render: () => {
+        const w = p.want;
+        const cm = (v) => `${Math.floor(v / 100)}m${String(v % 100).padStart(2, '0')}`;
+        const hMin = range(() => w.heightMin, (v) => { w.heightMin = Math.min(v, w.heightMax); }, { min: 140, max: 210, fmt: cm });
+        const hMax = range(() => w.heightMax, (v) => { w.heightMax = Math.max(v, w.heightMin); }, { min: 140, max: 210, fmt: cm });
+        const trait = (t) => h('div', { class: 'field' },
+          chips([{ id: 1, label: t.left }, { id: 0, label: 'Peu importe' }, { id: 5, label: t.right }], () => w.traits[t.id] ?? 0, (v) => { w.traits[t.id] = v; }));
+        return [
+          h('p', { class: 'small', style: { margin: '0 0 22px' } }, 'C’est sur ces réponses que je m’appuie le plus pour te choisir quelqu’un. Laisse vide ce qui t’est égal.'),
+          field('Son style (4 max)', chips(STYLES, () => w.styles, (v) => { w.styles = v; }, { multi: true, max: 4 })),
+          field('Sa silhouette', chips(BUILDS, () => w.builds, (v) => { w.builds = v; }, { multi: true })),
+          h('div', { class: 'field' }, h('label', {}, 'Sa taille : au moins ', hMin.val), hMin.node),
+          h('div', { class: 'field' }, h('label', {}, 'et au plus ', hMax.val), hMax.node),
+          h('div', { class: 'section-label' }, 'Son caractère'),
+          ...TRAITS.map(trait),
+          field('Ce qui compte chez l’autre (3 max)', chips(VALUES, () => w.values, (v) => { w.values = v; }, { multi: true, max: 3 })),
+          field('Sa façon de vivre', chips(INTERESTS, () => w.interests, (v) => { w.interests = v; }, { multi: true, max: 4 })),
+          field('S’il ou elle fume', chips([{ id: 'egal', label: 'Ça m’est égal' }, { id: 'plutot', label: 'Plutôt pas' }, { id: 'non', label: 'Non, vraiment pas' }], () => w.smoke, (v) => { w.smoke = v; })),
+        ];
+      },
+      validate: () => {
+        const w = p.want;
+        if (!w.styles.length && !w.builds.length && !w.values.length) return 'Donne-moi au moins un style, une silhouette ou une valeur : c’est la base du matching.';
+        if (w.heightMin > w.heightMax) return 'La taille minimum dépasse la taille maximum.';
+        return null;
+      },
+    },
+    {
       eyebrow: 'Où tu vas', title: 'Ta vie',
       render: () => [
         field('Ton métier (gardé secret jusqu’à la fin du date)', text(() => p.job, (v) => { p.job = v; }, { placeholder: 'Architecte', maxlength: 50 })),
@@ -218,6 +247,11 @@ export function defaults(existing) {
     job: '', ambitions: [], intent: null, kids: null, smoke: null, drink: null,
     consent18: false, consentData: false, consentSafety: false,
     ...structuredClone(existing || {}),
+    want: {
+      styles: [], builds: [], heightMin: 150, heightMax: 200, traits: { social: 0, tempo: 0, plan: 0, talk: 0 },
+      values: [], interests: [], smoke: 'egal',
+      ...structuredClone(existing?.want || {}),
+    },
   };
 }
 

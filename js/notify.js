@@ -34,9 +34,27 @@ function keyBytes(b64) {
   return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 }
 
+// Préférence « notifications coupées » (réglage dans le menu).
+const OFF = 'cai.notifOff';
+export const notifOff = () => { try { return localStorage.getItem(OFF) === '1'; } catch { return false; } };
+const setOff = (v) => { try { localStorage.setItem(OFF, v ? '1' : '0'); } catch { /* rien */ } };
+
+// Coupe les notifications de ce téléphone (désabonnement côté serveur).
+export async function disablePush(store) {
+  setOff(true);
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    const sub = await reg?.pushManager?.getSubscription();
+    if (sub) { await store?.removePush?.(sub.endpoint); await sub.unsubscribe(); }
+  } catch { /* rien */ }
+}
+
 // Abonne ce téléphone aux notifications push (appli fermée). Renvoie 'ok' ou une raison.
-export async function enablePush(store, { ask = false } = {}) {
-  if (!store?.pushKey) return 'no-server';
+// silent : simple resynchronisation au démarrage (respecte le réglage « coupées »).
+export async function enablePush(store, { ask = false, silent = false } = {}) {
+  if (silent && notifOff()) return 'off';
+  if (!silent) setOff(false);
+  if (!store?.pushKey) return notifState() === 'granted' ? 'ok' : (ask && notifSupported() ? ((await askPermission()) === 'granted' ? 'ok' : 'denied') : 'no-server');
   if (!pushSupported()) return isIosBrowser() ? 'ios-install' : 'unsupported';
   let perm = Notification.permission;
   if (perm === 'default' && ask) perm = await askPermission();
@@ -75,6 +93,7 @@ export async function show(body, tag) {
 
 // Appelé à chaque tick : notifie les cartes nouvellement débloquées (une seule fois chacune).
 export function notifyNew(dateId, unlockedMoments, { silentFirst } = {}) {
+  if (notifOff()) return [];
   let seen;
   try { seen = JSON.parse(localStorage.getItem(NOTIFIED + dateId) || 'null'); } catch { seen = null; }
   const first = seen === null;

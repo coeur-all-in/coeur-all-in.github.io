@@ -58,7 +58,7 @@ qui attend depuis le plus longtemps :
 | ≥ 15 min | sans limite | tout âge (18+) | 0 | non |
 
 Jamais assouplis : le genre recherché (dans les deux sens), la majorité, ne jamais reproposer quelqu'un.
-Score sur 100 : intention 20 · valeurs 20 · centres d'intérêt 15 · caractère 15 · ambitions 10 · enfants 10 · tabac/alcool 10.
+Score sur 100 : **65 % « ton type »** (style, silhouette, taille, caractère, valeurs, façon de vivre, tabac — ce que chacun recherche chez l'autre, dans les deux sens) + 35 % affinités générales (intention, valeurs, centres d'intérêt, caractère, ambitions, enfants, habitudes).
 Les origines ne servent pas au score (donnée sensible, RGPD).
 Une tâche planifiée (`pg_cron`, chaque minute) matche les personnes en attente même appli fermée.
 Les comptes inactifs depuis 14 jours ne sont plus proposés.
@@ -85,6 +85,11 @@ Le mode démo (voyage dans le temps) n'est visible que pour les admins (table `a
 ```sql
 insert into public.admins select id from auth.users where email = 'adresse@exemple.fr' on conflict do nothing;
 ```
+
+### Démo à deux (admin)
+En mode démo, l'admin peut **choisir son match** (☰ → Choisir mon match) et **avancer le temps** depuis l'Accueil :
+l'avance est enregistrée sur le date (`demo_offset_ms`), donc les deux personnes voient les mêmes cartes et reçoivent
+les mêmes notifications. La carte du lieu et la discussion sont visibles avant l'heure pour l'admin.
 
 ## Lancer en local
 

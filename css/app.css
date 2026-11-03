@@ -149,7 +149,11 @@ html, body { margin: 0; min-height: 100%; }
 /* Comme une vraie appli : pas de zoom, pas de glissement latéral, pas d'effet élastique. */
 html, body { height: 100%; overflow: hidden; overscroll-behavior: none; touch-action: pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* La page ne défile jamais : seul l'écran défile, la barre d'onglets reste immobile. */
-#app { height: 100dvh; overflow: hidden; }
+#app { height: 100dvh; height: var(--app-h, 100dvh); overflow: hidden; }
+@media (max-width: 979px) {
+  #app { position: fixed; left: 0; right: 0; top: var(--app-top, 0px); }
+  .tabbar { position: absolute; }
+}
 #app > .screen > * { flex-shrink: 0; }
 #app > .screen {
   height: 100%; min-height: 0; overflow-y: auto; overflow-x: hidden; background-attachment: local, local;
@@ -407,6 +411,16 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
   border-radius: 28px 28px 0 0; padding: 12px var(--pad) calc(var(--safe-bottom) + 26px);
   animation: up 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
+.sheet-wrap.right { justify-content: flex-end; align-items: stretch; }
+.sheet-wrap.closing { animation: fade 0.22s ease reverse both; }
+.sheet.drawer {
+  width: min(86%, 380px); max-height: none; height: 100%; border-radius: 28px 0 0 28px;
+  padding: calc(var(--safe-top) + 12px) var(--pad) calc(var(--safe-bottom) + 20px);
+  animation: from-right 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both; touch-action: pan-y;
+}
+@keyframes from-right { from { transform: translateX(100%); } }
+.drawer-head { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.sheet { touch-action: pan-y; will-change: transform; }
 .sheet .grab { width: 40px; height: 5px; border-radius: 5px; background: var(--field-border); margin: 0 auto 18px; }
 .sheet h3 { font-family: var(--display); font-weight: var(--display-weight); letter-spacing: -0.03em; font-size: 30px; margin: 4px 0 8px; }
 .sheet .sub { color: var(--muted); font-size: 14.5px; margin: 0 0 22px; line-height: 1.5; }
@@ -414,6 +428,19 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
   display: flex; gap: 14px; align-items: center; width: 100%; text-align: left; padding: 14px 4px; border: 0;
   border-bottom: 1px solid var(--line); background: none; color: var(--ink); font-size: 16px; font-weight: 500; cursor: pointer;
 }
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; cursor: pointer; }
+.switch-row strong { display: block; font-size: 16px; }
+.switch-row .d { display: block; font-size: 13px; color: var(--muted); margin-top: 2px; }
+.switch {
+  -webkit-appearance: none; appearance: none; flex: none; width: 52px; height: 32px; border-radius: 16px; position: relative; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--field-border); transition: background 0.2s;
+}
+.switch::after {
+  content: ''; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3); transition: transform 0.22s cubic-bezier(0.2, 1.2, 0.4, 1);
+}
+.switch:checked { background: var(--accent); border-color: var(--accent); }
+.switch:checked::after { transform: translateX(20px); }
 .menu-item svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
 .menu-item .d { font-size: 12.5px; font-weight: 400; color: var(--muted); display: block; margin-top: 2px; }
 .menu-item.danger, .menu-item.danger svg { color: #e0453a; }
@@ -598,7 +625,6 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
 }
 .thread-bar { padding: 8px 12px calc(var(--safe-bottom) + 10px); border-top: 1px solid var(--line); background: var(--bg); }
 .thread-bar .chat-bar { margin: 0; }
-.thread-note { text-align: center; font-size: 11px; color: var(--muted); margin-top: 6px; }
 .thread-locked { text-align: center; font-size: 13.5px; color: var(--muted); padding: 12px; border-radius: 16px; background: var(--surface); }
 .bubble.pending { opacity: 0.6; }
 .bubble.me + .bubble.me, .bubble.them + .bubble.them { margin-top: -1px; }
@@ -626,6 +652,8 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
   width: 100%; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line); margin: 16px 0 4px;
   background: var(--surface-2); box-shadow: var(--shadow); z-index: 0; isolation: isolate;
 }
+.map-dark .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.88) saturate(0.6); }
+.map .leaflet-control-zoom a { background: var(--surface); color: var(--ink); border-color: var(--line); }
 .map .leaflet-control-attribution { font-size: 9px; background: rgba(0, 0, 0, 0.35); color: #ddd; }
 .map .leaflet-control-attribution a { color: #fff; }
 .pin span {

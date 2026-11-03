@@ -60,6 +60,21 @@ export function createLocalStore() {
     },
     async getProfile() { return s.profile || null; },
     async isAdmin() { return true; }, // en solo, tout est permis (tests)
+    async adminListUsers() {
+      return BOTS.map((b) => ({ id: b.id, name: b.firstName, email: 'profil fictif', city: s.profile?.city || b.city, busy: false }));
+    },
+    async adminMatchWith(id) {
+      for (const d of s.dates || []) if (d.status === 'active') d.status = 'closed';
+      const bot = pool(s.profile || {}).find((b) => b.id === id);
+      const createdAt = clock.now();
+      const dateId = 'd-' + uid();
+      s.dates = [...(s.dates || []), {
+        id: dateId, a: s.userId, b: id, createdAt, status: 'active', score: score(s.profile || {}, bot),
+        dateAt: nextDateSlot(createdAt, s.profile?.availability, bot.availability),
+        objectives: pickObjectives(dateId, s.userId, id), answers: { [s.userId]: {} },
+      }];
+      save(s);
+    },
     async saveProfile(p) { s.profile = { ...p, id: s.userId }; save(s); return s.profile; },
 
     async findMatch() {

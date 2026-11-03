@@ -101,15 +101,50 @@ export function status(text, ic = 'check') {
 }
 
 // ---------- Feuille (bottom sheet) ----------
-export function sheet(build, { onClose } = {}) {
-  const wrap = h('div', { class: 'sheet-wrap', role: 'dialog', 'aria-modal': 'true' });
-  const panel = h('div', { class: 'sheet' }, h('div', { class: 'grab' }));
-  const close = () => { wrap.remove(); document.body.style.overflow = ''; onClose?.(); };
+// side : 'bottom' (par défaut, se ferme en glissant vers le bas) ou 'right' (tiroir, se ferme en glissant vers la droite).
+export function sheet(build, { onClose, side = 'bottom' } = {}) {
+  const wrap = h('div', { class: `sheet-wrap${side === 'right' ? ' right' : ''}`, role: 'dialog', 'aria-modal': 'true' });
+  const panel = h('div', { class: side === 'right' ? 'sheet drawer' : 'sheet' });
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    panel.style.transition = 'transform 0.22s cubic-bezier(0.4, 0, 1, 1)';
+    panel.style.transform = side === 'right' ? 'translateX(105%)' : 'translateY(105%)';
+    wrap.classList.add('closing');
+    setTimeout(() => { wrap.remove(); onClose?.(); }, 220);
+  };
+  const head = side === 'right'
+    ? h('div', { class: 'drawer-head' }, h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Fermer', onclick: close }, icon('close')))
+    : h('div', { class: 'grab' });
   wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
-  panel.append(...[build(close)].flat().filter(Boolean));
+
+  // Glisser pour fermer (le panneau suit le doigt).
+  let x0 = 0; let y0 = 0; let dx = 0; let dy = 0; let dragging = false; let locked = null;
+  panel.addEventListener('touchstart', (e) => {
+    const t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; dx = 0; dy = 0; locked = null;
+    dragging = side === 'right' || panel.scrollTop <= 0;
+    panel.style.transition = 'none';
+  }, { passive: true });
+  panel.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const t = e.touches[0]; dx = t.clientX - x0; dy = t.clientY - y0;
+    if (!locked) locked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    if (side === 'right' && locked === 'x' && dx > 0) panel.style.transform = `translateX(${dx}px)`;
+    else if (side !== 'right' && locked === 'y' && dy > 0 && panel.scrollTop <= 0) panel.style.transform = `translateY(${dy}px)`;
+  }, { passive: true });
+  panel.addEventListener('touchend', () => {
+    if (!dragging) return;
+    dragging = false;
+    const far = side === 'right' ? (locked === 'x' && dx > 70) : (locked === 'y' && dy > 90);
+    if (far) { close(); return; }
+    panel.style.transition = 'transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1)';
+    panel.style.transform = '';
+  });
+
+  panel.append(head, ...[build(close)].flat(Infinity).filter(Boolean));
   wrap.append(panel);
   document.body.append(wrap);
-  document.body.style.overflow = 'hidden';
   return close;
 }
 

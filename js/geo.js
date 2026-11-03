@@ -192,11 +192,12 @@ export function mapBlock(points, { height = 210, zoom = 15, interactive = true }
     try {
       const L = await loadLeaflet();
       const map = L.map(el, { zoomControl: interactive, attributionControl: true, scrollWheelZoom: false, dragging: interactive, touchZoom: interactive, doubleClickZoom: interactive, tap: false });
-      const style = dark() ? 'dark_all' : 'rastertiles/voyager';
-      L.tileLayer(`https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png`, {
-        maxZoom: 19, subdomains: 'abcd',
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>',
+      // Fond OpenStreetMap (gratuit, sans clé). En thème sombre, on l'assombrit par un filtre CSS.
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
       }).addTo(map);
+      if (dark()) el.classList.add('map-dark');
       const icon = L.divIcon({ className: 'pin', html: '<span></span>', iconSize: [34, 42], iconAnchor: [17, 40] });
       const markers = pts.map((p) => L.marker([p.lat, p.lng], { icon, title: p.label || '' }).addTo(map));
       if (pts.length > 1) map.fitBounds(L.featureGroup(markers).getBounds().pad(0.35));

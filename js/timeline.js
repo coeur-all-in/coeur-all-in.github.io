@@ -12,6 +12,8 @@ export const clock = {
   now() { return Date.now() + this.offset; },
   jumpTo(ts) { this.offset = Math.max(0, ts - Date.now()); safeSet(OFFSET_KEY, String(this.offset)); },
   reset() { this.offset = 0; safeSet(OFFSET_KEY, '0'); },
+  // Mode démo partagé (en ligne) : l'avance du temps vient du date, identique pour les deux personnes.
+  setShared(ms) { this.offset = Math.max(0, Number(ms) || 0); },
 };
 
 function safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }

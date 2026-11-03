@@ -1,7 +1,8 @@
 // Algorithme de matching (utilisé en mode solo ; supabase/schema.sql en contient l'équivalent SQL).
 //
 // 1. Filtres stricts (les deux sens) : genre recherché, tranche d'âge, distance.
-// 2. Score de compatibilité sur 100 :
+// 2. Score sur 100 = 65 % « ce que chacun recherche chez l'autre » (style, silhouette, taille,
+//    caractère, valeurs…, dans les deux sens) + 35 % affinités générales :
 //    - intention (sérieux / léger…)        20
 //    - valeurs communes                    20
 //    - centres d'intérêt communs           15
@@ -51,7 +52,32 @@ export function compatible(p, q) {
 
 const overlap = (a = [], b = []) => a.filter((x) => b.includes(x)).length;
 
+// À quel point q correspond à ce que p recherche (0 → 1). Ce qui est laissé vide compte comme « peu importe ».
+export function desire(p, q) {
+  const w = p.want || {};
+  const parts = [];
+  if (w.styles?.length) { const o = overlap(w.styles, q.style); parts.push([0.25, o ? 0.6 + 0.4 * Math.min(o, 2) / 2 : 0.15]); }
+  if (w.builds?.length) parts.push([0.15, w.builds.includes(q.build) ? 1 : 0.25]);
+  if (w.heightMin && w.heightMax && q.height) {
+    const d = q.height < w.heightMin ? w.heightMin - q.height : q.height > w.heightMax ? q.height - w.heightMax : 0;
+    parts.push([0.15, Math.max(0, 1 - d / 12)]);
+  }
+  const tr = Object.entries(w.traits || {}).filter(([, v]) => v);
+  if (tr.length) parts.push([0.2, tr.reduce((a, [k, v]) => a + (1 - Math.abs(v - (q.traits?.[k] ?? 3)) / 4), 0) / tr.length]);
+  if (w.values?.length) parts.push([0.15, 0.25 + 0.75 * Math.min(overlap(w.values, q.values), 2) / 2]);
+  if (w.interests?.length) parts.push([0.05, 0.4 + 0.6 * Math.min(overlap(w.interests, q.interests), 2) / 2]);
+  if (w.smoke && w.smoke !== 'egal') parts.push([0.1, q.smoke === 'jamais' ? 1 : q.smoke === 'parfois' ? (w.smoke === 'plutot' ? 0.6 : 0.3) : (w.smoke === 'plutot' ? 0.3 : 0)]);
+  const tot = parts.reduce((a, [wt]) => a + wt, 0);
+  return tot ? parts.reduce((a, [wt, v]) => a + wt * v, 0) / tot : 0.7;
+}
+
+// Score final sur 100 : 65 % « ce que chacun recherche » (dans les deux sens), 35 % affinités générales.
 export function score(p, q) {
+  const mutual = (desire(p, q) + desire(q, p)) / 2;
+  return Math.round(65 * mutual + 0.35 * baseScore(p, q));
+}
+
+function baseScore(p, q) {
   let s = 0;
   // Intention
   if (p.intent === q.intent) s += 20;

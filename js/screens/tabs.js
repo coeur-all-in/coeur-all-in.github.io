@@ -137,7 +137,7 @@ export function threadView(o) {
   renderMessages(list, o.messages, o.uid);
   let bar;
   if (o.onSend) {
-    const ta = h('textarea', { class: 'input chat-input', rows: 1, maxlength: 1000, placeholder: 'Message…', enterkeyhint: 'send',
+    const ta = h('textarea', { class: 'input chat-input', rows: 1, maxlength: 1000, placeholder: 'Message…', enterkeyhint: 'enter', autocapitalize: 'sentences',
       oninput: (e) => { e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`; } });
     const send = h('button', { class: 'chat-send', type: 'button', 'aria-label': 'Envoyer' },
       h('span', { html: '<svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5L4 12z" fill="currentColor"/></svg>' }));
@@ -150,8 +150,14 @@ export function threadView(o) {
       await o.onSend(body);
     };
     send.onclick = go;
-    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !/iphone|ipad|android/i.test(navigator.userAgent)) { e.preventDefault(); go(); } });
-    bar = h('div', { class: 'thread-bar' }, h('div', { class: 'chat-bar' }, ta, send), h('div', { class: 'thread-note' }, 'Texte uniquement · pas de photo ni de fichier'));
+    // Sur téléphone, la touche Entrée va à la ligne (comme Insta) ; on envoie avec la flèche.
+    // Sur ordinateur : Entrée envoie, Maj + Entrée va à la ligne.
+    const touch = matchMedia('(pointer: coarse)').matches;
+    ta.addEventListener('keydown', (e) => { if (!touch && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); } });
+    // Quand le clavier s'ouvre, on garde les derniers messages visibles.
+    ta.addEventListener('focus', () => setTimeout(() => { list.scrollTop = list.scrollHeight; }, 250));
+    send.addEventListener('pointerdown', (e) => e.preventDefault()); // le clavier reste ouvert après l'envoi
+    bar = h('div', { class: 'thread-bar' }, h('div', { class: 'chat-bar' }, ta, send));
   } else {
     bar = h('div', { class: 'thread-bar' }, h('div', { class: 'thread-locked' }, o.lockedText || 'Lecture seule'));
   }

@@ -1,7 +1,7 @@
 // Cœur All In — contrôleur principal.
 import { CONFIG, IS_REMOTE } from './config.js';
 import { forms, portraitText } from './content.js';
-import { askPermission, downloadCalendar, enablePush, isIosBrowser, notifState, notifyNew, setBadge } from './notify.js';
+import { askPermission, disablePush, downloadCalendar, enablePush, isIosBrowser, notifOff, notifState, notifyNew, pushSupported, setBadge } from './notify.js';
 import { CARDS, TILE, markDone, needsAction } from './screens/cards.js';
 import { onboarding } from './screens/onboarding.js';
 import { chatListView, chatOpensAt, rdvView, renderMessages, threadView } from './screens/tabs.js';
@@ -47,7 +47,24 @@ function ctx() {
 }
 
 // ---------- Démarrage ----------
+// Clavier mobile : l'appli prend exactement la hauteur visible, la barre d'écriture reste collée au clavier.
+function fitViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const apply = () => {
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty('--app-h', `${Math.round(vv.height)}px`);
+    rootStyle.setProperty('--app-top', `${Math.round(vv.offsetTop)}px`);
+    const list = document.querySelector('.thread-list');
+    if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 160) list.scrollTop = list.scrollHeight;
+  };
+  vv.addEventListener('resize', apply);
+  vv.addEventListener('scroll', apply);
+  apply();
+}
+
 async function boot() {
+  fitViewport();
   setInterval(tick, 1000);
   // Comme une vraie appli : pas de zoom (pincement, double-tap) sur la page.
   for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
@@ -63,7 +80,7 @@ async function boot() {
     if (document.hidden) { hiddenAt = Date.now(); return; }
     const away = hiddenAt && Date.now() - hiddenAt > 10000;
     hiddenAt = 0;
-    const typing = document.querySelector('.sheet-wrap, .duel') || ['onboarding', 'auth', 'splash', 'boot', 'thread'].includes(S.view);
+    const typing = document.querySelector('.sheet-wrap, .duel') || ['onboarding', 'auth', 'splash', 'boot', 'thread', 'notif-gate'].includes(S.view);
     // Appli pas fermée : retour direct à l'Accueil (le cœur ne s'affiche qu'au lancement).
     if (away && !typing && S.store && S.profile) {
       route().catch(() => {});
@@ -117,8 +134,14 @@ function showSplash(ready) {
       h('p', { class: 'splash-hint' }, 'Touche le cœur'))));
 }
 
+// En ligne, l'horloge suit l'avance du date (mode démo partagé par les deux personnes).
+function syncClock() {
+  if (IS_REMOTE) clock.setShared(S.data?.date?.demoOffset || 0);
+}
+
 async function route({ autoOpen = false } = {}) {
   S.data = await S.store.getDate();
+  syncClock();
   if (!S.data) return showSearch();
   sync();
   if (autoOpen) {
@@ -162,6 +185,7 @@ async function refresh(force = false) {
     const data = await S.store.getDate();
     if (!data) { if (['feed', 'card'].includes(S.view)) showSearch(); S.data = null; return; }
     S.data = data;
+    syncClock();
     const before = S.sig;
     sync();
     const busy = document.querySelector('.sheet-wrap') || document.activeElement?.matches?.('input, textarea');
@@ -181,8 +205,9 @@ async function afterLogin() {
   S.profile = await S.store.getProfile();
   S.admin = await S.store.isAdmin?.() || false;
   if (!S.admin) clock.reset();
-  if (S.profile) enablePush(S.store); // resynchronise l'abonnement si déjà autorisé
+  if (S.profile) enablePush(S.store, { silent: true }); // resynchronise l'abonnement si déjà autorisé
   if (!S.profile) return S.store.needsAuth ? showOnboarding() : showWelcome();
+  if (needsNotifGate()) return showNotifGate(() => route({ autoOpen: true }));
   await route({ autoOpen: true });
 }
 
@@ -321,9 +346,7 @@ function showOnboarding(edit = false) {
     onDone: async (p) => {
       S.profile = await S.store.saveProfile(p);
       if (edit) { toast('Portrait enregistré.'); return route(); }
-      if (S.store.pushKey) await enablePush(S.store, { ask: true });
-      else if (notifState() === 'default') await askPermission();
-      showSearch();
+      showNotifGate(() => showSearch());
     },
   });
 }
@@ -343,6 +366,93 @@ function pushBanner() {
       toast(r === 'ok' ? 'Notifications activées.' : r === 'denied' ? 'Refusées. Réactive-les dans les réglages du téléphone.' : 'Pas encore possible, réessaie dans une minute.');
       if (r === 'ok' || r === 'denied') e.target.closest('.install')?.remove();
     }, 'btn quiet'));
+}
+
+// ---------- Admin : choisir son match (démo à deux) ----------
+function pickMatch() {
+  sheet((close) => {
+    const box = h('div', {}, h('p', { class: 'small' }, 'Chargement…'));
+    S.store.adminListUsers().then((users) => {
+      if (!users.length) { box.replaceChildren(h('p', { class: 'small' }, 'Aucun autre compte pour l’instant.')); return; }
+      box.replaceChildren(h('div', { class: 'convs' }, users.map((u) => h('button', {
+        class: 'conv old', type: 'button',
+        onclick: async () => {
+          if (!(await confirmSheet({ title: `Matcher avec ${u.name} ?`, sub: 'Vos dates en cours seront refermés. Le nouveau date commence tout de suite pour vous deux.', yes: 'Créer le date' }))) return;
+          close();
+          try { await S.store.adminMatchWith(u.id); toast(`Date créé avec ${u.name}.`); await route({ autoOpen: true }); }
+          catch (e) { toast(e.message); }
+        },
+      }, avatarOf(u.name), h('div', { class: 'conv-main' },
+        h('div', { class: 'conv-top' }, h('span', { class: 'conv-name' }, u.name), u.busy ? h('span', { class: 'conv-time' }, 'en date') : null),
+        h('div', { class: 'conv-bottom' }, h('span', { class: 'conv-preview' }, [u.email, u.city].filter(Boolean).join(' · '))))))));
+    }).catch((e) => box.replaceChildren(h('p', { class: 'small' }, e.message)));
+    return [h('h3', {}, 'Choisir mon match'), h('p', { class: 'sub' }, 'Mode démo (admin) : pour tester à deux, avec ton acolyte.'), box];
+  });
+}
+const avatarOf = (name) => h('div', { class: 'avatar' }, h('span', {}, (name || '?').charAt(0).toUpperCase()));
+
+// ---------- Activation des notifications (obligatoire après la création du compte) ----------
+function needsNotifGate() {
+  if (notifOff()) return false;                    // coupées volontairement dans les réglages
+  if (!pushSupported() && !isIosBrowser()) return false; // navigateur incapable : on ne bloque pas
+  return notifState() !== 'granted' || isIosBrowser();
+}
+
+function showNotifGate(next) {
+  if (!needsNotifGate()) return next();
+  S.view = 'notif-gate';
+  const ios = isIosBrowser();
+  const denied = notifState() === 'denied';
+  const err = h('p', { class: 'small', style: { textAlign: 'center', minHeight: '1em' } });
+  const steps = ios
+    ? ['Touche le bouton Partager de Safari (le carré avec une flèche)', 'Choisis « Sur l’écran d’accueil », puis « Ajouter »', 'Ouvre Cœur All In depuis la nouvelle icône : je te redemanderai les notifications']
+    : denied
+      ? ['Ouvre les réglages de ton navigateur ou de ton téléphone', 'Notifications → Cœur All In (ou coeur-all-in.github.io)', 'Autorise, puis reviens ici']
+      : ['Touche « Activer les notifications »', 'Accepte la demande de ton téléphone', 'C’est tout : je te préviens au bon moment'];
+  root.replaceChildren(h('main', { class: 'screen' },
+    h('div', { class: 'spacer' }),
+    h('div', { class: 'pulse', style: { margin: '10px auto 26px' } }, icon('bell')),
+    h('div', { class: 'eyebrow', style: { alignSelf: 'center' } }, 'Indispensable'),
+    h('h1', { class: 'title', style: { textAlign: 'center', fontSize: '42px' } }, 'Active les notifications'),
+    h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, 'Tout le jeu passe par elles : le match, le lieu, ton objectif secret, les quatre jeux de la soirée. Sans elles, tu rates les messages.')),
+    card({ items: steps }),
+    err,
+    !ios && !denied && button('Activer les notifications', async () => {
+      const r = await enablePush(S.store, { ask: true });
+      if (r === 'ok' || notifState() === 'granted') { toast('Notifications activées.'); next(); return; }
+      err.textContent = r === 'denied' ? 'Refusées. Suis les étapes ci-dessus pour les réactiver.' : 'Pas encore possible, réessaie dans une minute.';
+      if (r === 'denied') showNotifGate(next);
+    }),
+    denied && button('J’ai autorisé, continuer', () => (notifState() === 'granted' ? (enablePush(S.store, { ask: true }), next()) : (err.textContent = 'Toujours bloquées pour l’instant.'))),
+    button(ios || denied ? 'Continuer sans (déconseillé)' : 'Plus tard (déconseillé)', () => next(), 'link'),
+  ));
+}
+
+// Réglages des notifications (menu) : activer / couper.
+function notifSettings() {
+  sheet((close) => {
+    const box = h('div', {});
+    const render = () => {
+      const on = notifState() === 'granted' && !notifOff();
+      box.replaceChildren(
+        h('label', { class: 'switch-row' },
+          h('span', {}, h('strong', {}, 'Notifications'), h('span', { class: 'd' }, on ? 'Activées : le match, chaque carte, chaque message' : 'Coupées sur ce téléphone')),
+          h('input', { type: 'checkbox', class: 'switch', checked: on, onchange: async (e) => {
+            if (e.target.checked) {
+              const r = await enablePush(S.store, { ask: true });
+              if (r !== 'ok' && notifState() !== 'granted') toast(isIosBrowser() ? 'Sur iPhone : installe d’abord l’appli sur l’écran d’accueil.' : 'Autorise les notifications dans les réglages du téléphone.');
+            } else {
+              await disablePush(S.store);
+              toast('Notifications coupées.');
+            }
+            render();
+          } })),
+        notifState() === 'denied' && h('p', { class: 'small' }, 'Elles sont bloquées par ton téléphone : réglages → notifications → Cœur All In.'),
+      );
+    };
+    render();
+    return [h('h3', {}, 'Notifications'), h('p', { class: 'sub' }, 'Tu peux les couper à tout moment. Sans elles, ouvre l’appli régulièrement pour ne rien rater.'), box];
+  });
 }
 
 // ---------- Recherche ----------
@@ -366,9 +476,11 @@ function showSearch() {
     h('div', { class: 'body', style: { textAlign: 'center' } },
       h('p', {}, 'Je commence exigeant, puis j’élargis minute après minute. Au bout de 15 minutes, je te présente la première personne disponible.')),
     S.searchBox,
-    demoOn() && S.store.adminSkipSearch && h('section', { class: 'demo' },
+    demoOn() && h('section', { class: 'demo' },
       h('div', { class: 'k' }, 'Mode démo (admin)'),
-      button('Recherche large maintenant', async () => {
+      button('Choisir mon match', () => pickMatch(), 'btn quiet'),
+      h('div', { style: { height: '8px' } }),
+      S.store.adminSkipSearch && button('Recherche large maintenant', async () => {
         await S.store.adminSkipSearch();
         toast('Recherche ouverte à tout le monde.');
         await trySearch();
@@ -500,13 +612,18 @@ function demoPanel() {
   return h('section', { class: 'demo' },
     h('div', { class: 'k' }, `Mode démo · il est ${weekday(clock.now())} ${hourLabel(clock.now())}${clock.offset ? ' (simulé)' : ''}`),
     button(h('span', {}, `Avancer à ${relDay(target, clock.now())} ${hourLabel(target)}`), async () => {
-      clock.jumpTo(target + 1000);
+      if (S.store.setDemoOffset) await S.store.setDemoOffset(target + 1000 - Date.now()); // partagé avec ton match
+      else clock.jumpTo(target + 1000);
       await refresh();
       const l = unlocked(S.data.date, S.uid);
       const last = l[l.length - 1];
       if (last && !seen().has(last.key)) showCard(last.key); else showFeed();
     }, 'btn quiet'),
-    clock.offset ? button('Revenir au temps réel', () => { clock.reset(); refresh(true); }, 'link') : null);
+    clock.offset ? button('Revenir au temps réel', async () => {
+      if (S.store.setDemoOffset) await S.store.setDemoOffset(null); else clock.reset();
+      await refresh(true);
+    }, 'link') : null,
+    S.store.setDemoOffset && h('p', { class: 'small', style: { marginTop: '8px' } }, 'Le temps avance aussi pour ton match : mêmes cartes, mêmes notifications.'));
 }
 
 // ---------- Une carte ----------
@@ -675,22 +792,10 @@ function openMenu() {
     h('p', { class: 'sub' }, IS_REMOTE ? `${S.profile?.firstName || ''} · ${S.store.email || ''}` : 'Mode solo · la personne en face est simulée'),
     item('home', 'Accueil', null, () => { close(); goTab('home'); }),
     item('user', 'Mon portrait', 'Modifier mes réponses', () => { close(); showOnboarding(true); }),
-    item('bell', 'Notifications', isIosBrowser() ? 'Sur iPhone : installe d’abord l’appli sur l’écran d’accueil'
-      : notif === 'granted' ? 'Activées, même appli fermée' : notif === 'denied' ? 'Bloquées : à réactiver dans les réglages du téléphone' : 'Touche pour activer', async () => {
-      close();
-      const r = await enablePush(S.store, { ask: true });
-      const msg = {
-        ok: 'Notifications activées : je te préviens même appli fermée.',
-        'ios-install': 'Sur iPhone : Partager → « Sur l’écran d’accueil », puis ouvre l’appli depuis l’icône et réessaie.',
-        denied: 'Notifications refusées. Réactive-les dans les réglages du téléphone.',
-        'not-ready': 'Le serveur de notifications démarre, réessaie dans une minute.',
-        'no-server': notifState() === 'granted' ? 'Notifications activées.' : 'Notifications non autorisées.',
-        unsupported: 'Ce navigateur ne gère pas les notifications.',
-      }[r] || 'Impossible d’activer les notifications pour le moment.';
-      toast(msg);
-    }),
+    item('bell', 'Notifications', notifOff() ? 'Coupées' : notif === 'granted' ? 'Activées' : 'À activer', () => { close(); notifSettings(); }),
     hasDate && item('cal', 'Rappels dans mon calendrier', 'Chaque message à l’heure exacte, même appli fermée', () => { downloadCalendar(S.data.date, S.uid); close(); }),
     item('edit', 'Apparence', THEMES.find((t) => t.id === currentTheme())?.label, () => { close(); themeSheet(); }),
+    demoOn() && S.store.adminListUsers && item('heart', 'Choisir mon match (admin)', 'Pour tester à deux', () => { close(); pickMatch(); }),
     S.admin && item('clock', 'Mode démo (admin)', demoOn() ? 'Activé : tu peux avancer dans le temps' : 'Désactivé', () => { pref.set('demo', !demoOn()); if (!demoOn()) clock.reset(); close(); route(); }),
     hasDate && item('shield', 'Un souci avec ce date ?', 'Annuler, signaler, se protéger', () => { close(); safety(); }),
     item('pause', S.profile?.paused ? 'Reprendre les rencontres' : 'Mettre en pause', 'On ne te proposera plus personne', async () => {
@@ -712,7 +817,7 @@ function openMenu() {
         location.reload();
       }
     }, 'danger'),
-  ]);
+  ], { side: 'right' });
 }
 
 function item(ic, label, desc, onClick, cls = '') {

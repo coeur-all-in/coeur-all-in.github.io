@@ -47,7 +47,7 @@ export async function createSupabaseStore() {
     return {
       id: row.id, a: row.a, b: row.b, score: row.score,
       createdAt: Date.parse(row.created_at), dateAt: Date.parse(row.date_at),
-      objectives: row.objectives || {}, answers: byUser, status: 'active',
+      objectives: row.objectives || {}, answers: byUser, status: 'active', demoOffset: row.demo_offset_ms ?? null,
     };
   }
 
@@ -91,6 +91,17 @@ export async function createSupabaseStore() {
       check(await sb.auth.updateUser({ password }));
       recovery = false;
       history.replaceState(null, '', location.pathname);
+    },
+    async adminListUsers() {
+      return check(await sb.rpc('admin_list_users')).map((u) => ({ id: u.id, name: u.first_name || '(sans prénom)', email: u.email, city: u.city, busy: u.busy }));
+    },
+    async adminMatchWith(id) {
+      check(await sb.rpc('admin_match_with', { target: id }));
+      return this.getDate();
+    },
+    async setDemoOffset(ms) {
+      if (!currentDateId) await this.getDate();
+      check(await sb.rpc('admin_set_demo_offset', { p_date: currentDateId, ms: ms == null ? null : Math.round(ms) }));
     },
     async adminSkipSearch() {
       check(await sb.rpc('admin_skip_search'));

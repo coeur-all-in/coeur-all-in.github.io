@@ -34,6 +34,7 @@ create table if not exists public.dates (
   objectives jsonb not null default '{}',
   score int
 );
+alter table public.dates add column if not exists demo_offset_ms bigint;  -- mode démo : avance du temps partagée par les deux
 create index if not exists dates_a_idx on public.dates(a);
 create index if not exists dates_b_idx on public.dates(b);
 
@@ -81,8 +82,8 @@ language sql immutable as $$
   end
 $$;
 
--- Score de compatibilité sur 100 — même logique que js/matching.js.
-create or replace function public.match_score(p jsonb, q jsonb) returns int
+-- Affinités générales sur 100 (35 % du score final) — même logique que js/matching.js.
+create or replace function public.base_score(p jsonb, q jsonb) returns int
 language plpgsql immutable as $$
 declare
   s numeric := 0;
@@ -113,6 +114,60 @@ begin
   s := s + (case when p->>'drink' = q->>'drink' then 1 when 'parfois' in (p->>'drink', q->>'drink') then 0.6 else 0.1 end) * 5;
   return round(s);
 end $$;
+
+-- À quel point q correspond à ce que p recherche (0 → 1). Vide = « peu importe ».
+create or replace function public.desire(p jsonb, q jsonb) returns numeric
+language plpgsql immutable as $$
+declare
+  w jsonb := coalesce(p->'want', '{}'::jsonb);
+  tot numeric := 0;
+  acc numeric := 0;
+  o int;
+  d numeric;
+  n int := 0;
+  tsum numeric := 0;
+  k text;
+  v int;
+  h int := nullif(q->>'height', '')::int;
+begin
+  if jsonb_array_length(coalesce(w->'styles', '[]')) > 0 then
+    o := public.jcommon(w->'styles', q->'style');
+    tot := tot + 0.25; acc := acc + 0.25 * (case when o > 0 then 0.6 + 0.4 * least(o, 2) / 2.0 else 0.15 end);
+  end if;
+  if jsonb_array_length(coalesce(w->'builds', '[]')) > 0 then
+    tot := tot + 0.15; acc := acc + 0.15 * (case when (w->'builds') ? coalesce(q->>'build', '') then 1 else 0.25 end);
+  end if;
+  if (w->>'heightMin') is not null and (w->>'heightMax') is not null and h is not null then
+    d := greatest((w->>'heightMin')::int - h, h - (w->>'heightMax')::int, 0);
+    tot := tot + 0.15; acc := acc + 0.15 * greatest(0, 1 - d / 12.0);
+  end if;
+  for k, v in select key, value::int from jsonb_each_text(coalesce(w->'traits', '{}')) loop
+    if v <> 0 then
+      n := n + 1;
+      tsum := tsum + 1 - abs(v - coalesce((q->'traits'->>k)::int, 3)) / 4.0;
+    end if;
+  end loop;
+  if n > 0 then tot := tot + 0.2; acc := acc + 0.2 * tsum / n; end if;
+  if jsonb_array_length(coalesce(w->'values', '[]')) > 0 then
+    tot := tot + 0.15; acc := acc + 0.15 * (0.25 + 0.75 * least(public.jcommon(w->'values', q->'values'), 2) / 2.0);
+  end if;
+  if jsonb_array_length(coalesce(w->'interests', '[]')) > 0 then
+    tot := tot + 0.05; acc := acc + 0.05 * (0.4 + 0.6 * least(public.jcommon(w->'interests', q->'interests'), 2) / 2.0);
+  end if;
+  if coalesce(w->>'smoke', 'egal') <> 'egal' then
+    tot := tot + 0.1;
+    acc := acc + 0.1 * (case q->>'smoke' when 'jamais' then 1
+      when 'parfois' then (case when w->>'smoke' = 'plutot' then 0.6 else 0.3 end)
+      else (case when w->>'smoke' = 'plutot' then 0.3 else 0 end) end);
+  end if;
+  return case when tot > 0 then acc / tot else 0.7 end;
+end $$;
+
+-- Score final sur 100 : 65 % « ce que chacun recherche chez l'autre » (dans les deux sens) + 35 % affinités.
+create or replace function public.match_score(p jsonb, q jsonb) returns int
+language sql immutable as $$
+  select round(65 * (public.desire(p, q) + public.desire(q, p)) / 2 + 0.35 * public.base_score(p, q))::int
+$$;
 
 -- Une personne est « prise » si elle a un date qu'elle n'a pas refermé (et pas trop vieux).
 create or replace function public.is_busy(uid uuid) returns boolean
@@ -377,7 +432,9 @@ drop policy if exists "messages: écrire si les deux ont dit oui" on public.mess
 drop policy if exists "messages: écrire à partir d'1 h avant" on public.messages;
 create policy "messages: écrire à partir d'1 h avant" on public.messages for insert with check (
   user_id = auth.uid() and public.in_date(date_id)
-  and (now() >= (select d.date_at - interval '1 hour' from dates d where d.id = messages.date_id) or public.is_admin())
+  and (exists (select 1 from dates d where d.id = messages.date_id
+               and now() + coalesce(d.demo_offset_ms, 0) * interval '1 millisecond' >= d.date_at - interval '1 hour')
+       or public.is_admin())
   and (select count(*) from answers x where x.date_id = messages.date_id and x.key = 'accept' and x.value = 'true'::jsonb) = 2
   and not exists (select 1 from dates d where d.id = messages.date_id and auth.uid() = any(d.closed_by))
 );
@@ -441,7 +498,8 @@ language plpgsql security definer set search_path = public as $$
 begin
   return query
   with d as (
-    select dt.id, dt.a, dt.b, dt.created_at, dt.closed_by, (dt.date_at at time zone 'Europe/Paris')::date as dday
+    select dt.id, dt.a, dt.b, dt.created_at, dt.closed_by, (dt.date_at at time zone 'Europe/Paris')::date as dday,
+           now() + coalesce(dt.demo_offset_ms, 0) * interval '1 millisecond' as vnow
     from dates dt
     where dt.date_at > now() - interval '2 days'
   ),
@@ -459,7 +517,7 @@ begin
     from p
   ),
   m as (
-    select s.id as m_date, s.uid as m_user, k.key as m_key, k.at as m_at, k.body as m_body
+    select s.id as m_date, s.uid as m_user, k.key as m_key, k.at as m_at, k.body as m_body, s.vnow as m_now
     from s cross join lateral (values
       ('invite',   s.created_at, 'Quelqu’un a pensé à toi. Ouvre vite.', true),
       ('cadrage',  greatest(s.created_at, s.ok_at), 'C’est calé : vous avez dit oui tous les deux.', s.both_ok),
@@ -478,11 +536,11 @@ begin
       ('apres',    ((s.dday + 1) + time '11:00') at time zone 'Europe/Paris', 'Et maintenant ? Une dernière question.', s.both_ok),
       ('verdict',  greatest(((s.dday + 1) + time '11:00') at time zone 'Europe/Paris', s.again_at), 'Vous avez répondu tous les deux.', s.both_again)
     ) as k(key, at, body, ready)
-    where k.ready and k.at <= now()
+    where k.ready and k.at <= s.vnow
     union all
     -- Nouveaux messages de la discussion (pour la personne qui les reçoit).
     select mm.date_id, case when mm.user_id = dt.a then dt.b else dt.a end, 'msg:' || mm.id, mm.created_at,
-           coalesce(pr.data->>'firstName', 'Ton date') || ' : ' || left(mm.body, 90)
+           coalesce(pr.data->>'firstName', 'Ton date') || ' : ' || left(mm.body, 90), now()
     from messages mm
     join dates dt on dt.id = mm.date_id
     left join profiles pr on pr.id = mm.user_id
@@ -497,7 +555,7 @@ begin
   )
   select distinct on (m.m_user) m.m_user, m.m_date, m.m_key, m.m_body
   from ins join m on m.m_date = ins.date_id and m.m_user = ins.user_id and m.m_key = ins.key
-  where m.m_at > now() - interval '3 hours'
+  where m.m_at > m.m_now - interval '3 hours'
   order by m.m_user, m.m_at desc;
 end $$;
 revoke all on function public.due_pushes() from public, anon, authenticated;
@@ -541,6 +599,53 @@ language sql security definer set search_path = public as $$
 $$;
 revoke all on function public.admin_skip_search() from public, anon;
 grant execute on function public.admin_skip_search() to authenticated;
+
+-- Admin (mode démo) : liste des comptes, pour choisir son match.
+create or replace function public.admin_list_users() returns table (id uuid, first_name text, email text, city text, gender text, busy boolean)
+language sql stable security definer set search_path = public as $$
+  select p.id, p.data->>'firstName', u.email::text, p.city, p.gender, public.is_busy(p.id)
+  from profiles p join auth.users u on u.id = p.id
+  where public.is_admin() and p.id <> auth.uid()
+  order by p.updated_at desc
+  limit 200
+$$;
+revoke all on function public.admin_list_users() from public, anon;
+grant execute on function public.admin_list_users() to authenticated;
+
+-- Admin (mode démo) : crée un date avec la personne choisie (les dates en cours des deux sont refermés).
+create or replace function public.admin_match_with(target uuid) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := auth.uid();
+  new_id uuid;
+  objs text[] := array['vingt', 'souvenir', 'fourire', 'chanson', 'ailleurs', 'fierte', 'enfant', 'plat'];
+  i int := 1 + floor(random() * 8)::int;
+  j int := 1 + floor(random() * 7)::int;
+begin
+  if not public.is_admin() then raise exception 'Réservé aux admins'; end if;
+  if target is null or target = me or not exists (select 1 from profiles where id = target) then raise exception 'Personne introuvable'; end if;
+  if j >= i then j := j + 1; end if;
+  update dates d set closed_by = array(select distinct unnest(d.closed_by || array[d.a, d.b]))
+  where (d.a in (me, target) or d.b in (me, target)) and d.date_at > now() - interval '2 days';
+  insert into dates (a, b, date_at, objectives, score)
+  values (me, target, (((now() at time zone 'Europe/Paris')::date + 3) + time '20:00') at time zone 'Europe/Paris',
+          jsonb_build_object(me::text, objs[i], target::text, objs[j]),
+          (select public.match_score(a.data, b.data) from profiles a, profiles b where a.id = me and b.id = target))
+  returning id into new_id;
+  update profiles set searching_since = null where id in (me, target);
+  return new_id;
+end $$;
+revoke all on function public.admin_match_with(uuid) from public, anon;
+grant execute on function public.admin_match_with(uuid) to authenticated;
+
+-- Admin (mode démo) : avance le temps du date pour les deux personnes (cartes et notifications comprises).
+create or replace function public.admin_set_demo_offset(p_date uuid, ms bigint) returns void
+language sql security definer set search_path = public as $$
+  update dates set demo_offset_ms = ms
+  where id = p_date and public.is_admin() and auth.uid() in (a, b)
+$$;
+revoke all on function public.admin_set_demo_offset(uuid, bigint) from public, anon;
+grant execute on function public.admin_set_demo_offset(uuid, bigint) to authenticated;
 
 insert into public.admins select id from auth.users where email = 'fa67hussain@gmail.com' on conflict do nothing;
 
