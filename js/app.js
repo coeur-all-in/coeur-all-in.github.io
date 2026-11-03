@@ -363,9 +363,24 @@ function about() {
 // ---------- Thèmes ----------
 export const THEMES = [
   { id: 'creme', label: 'Crème', bg: '#faf6f1', swatch: 'linear-gradient(135deg,#ffb86b,#ff5a47 60%,#1d1a17 60%)' },
+  { id: 'noir', label: 'Noir', bg: '#0b0b0b', swatch: 'linear-gradient(135deg,#ff5a47,#ffb86b 60%,#f6f1ea 60%)' },
   { id: 'minuit', label: 'Minuit', bg: '#09090f', swatch: 'linear-gradient(135deg,#ff4d8d,#7c5cff 60%,#09090f 60%)' },
   { id: 'sorbet', label: 'Sorbet', bg: '#f2efff', swatch: 'linear-gradient(135deg,#c8f53c,#6a46ff 60%,#17112e 60%)' },
 ];
+export const FONTS = [
+  { id: '', label: 'Classique', family: 'Fraunces' },
+  { id: 'syne', label: 'Syne', family: 'Syne' },
+  { id: 'unbounded', label: 'Unbounded', family: 'Unbounded' },
+  { id: 'geist', label: 'Geist', family: 'Geist' },
+  { id: 'jakarta', label: 'Jakarta', family: 'Plus Jakarta Sans' },
+  { id: 'instrument', label: 'Instrument', family: 'Instrument Serif' },
+];
+const currentFont = () => document.documentElement.getAttribute('data-font') || '';
+function applyFont(id) {
+  if (id) document.documentElement.setAttribute('data-font', id);
+  else document.documentElement.removeAttribute('data-font');
+  pref.set('font', id);
+}
 const currentTheme = () => document.documentElement.getAttribute('data-theme') || 'creme';
 function applyTheme(id) {
   const t = THEMES.find((x) => x.id === id) || THEMES[0];
@@ -382,8 +397,14 @@ function themeSheet() {
       class: 'theme-pick', type: 'button', 'aria-pressed': String(currentTheme() === t.id),
       onclick: () => { applyTheme(t.id); render(); },
     }, h('i', { style: { background: t.swatch } }), t.label)));
-    render();
+    const fonts = h('div', { class: 'chips' });
+    const renderFonts = () => fonts.replaceChildren(...FONTS.map((f) => h('button', {
+      class: 'chip', type: 'button', 'aria-pressed': String(currentFont() === f.id), style: { fontFamily: `'${f.family}'` },
+      onclick: () => { applyFont(f.id); renderFonts(); },
+    }, f.label)));
+    render(); renderFonts();
     return [h('h3', {}, 'Apparence'), h('p', { class: 'sub' }, 'Choisis l’ambiance de l’appli. Tu peux changer quand tu veux.'), grid,
+      h('div', { class: 'section-label' }, 'Police'), fonts,
       h('div', { style: { height: '18px' } }), button('Terminé', () => { close(); route(); })];
   });
 }

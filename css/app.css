@@ -100,6 +100,42 @@
   color-scheme: light;
 }
 
+
+/* ---------- Thème « Noir » (noir profond, même corail que Crème) ---------- */
+[data-theme='noir'] {
+  --bg: #0b0b0b;
+  --surface: #161616;
+  --surface-2: #1f1f1f;
+  --ink: #f6f1ea;
+  --ink-2: #c9c3bb;
+  --muted: #8a847c;
+  --line: rgba(246, 241, 234, 0.08);
+  --field-bg: rgba(246, 241, 234, 0.04);
+  --field-border: rgba(246, 241, 234, 0.14);
+  --accent: #ff5a47;
+  --accent-2: #ffb86b;
+  --accent-soft: rgba(255, 90, 71, 0.14);
+  --on-accent: #ffffff;
+  --btn: #f6f1ea;
+  --btn-ink: #0b0b0b;
+  --hero:
+    radial-gradient(100% 50% at 100% 0%, rgba(255, 90, 71, 0.28), transparent 62%),
+    radial-gradient(80% 40% at 0% 0%, rgba(255, 184, 107, 0.14), transparent 60%);
+  --radius: 22px;
+  --btn-radius: 18px;
+  --shadow: 0 0 0 1px rgba(246, 241, 234, 0.05);
+  --overlay: rgba(0, 0, 0, 0.6);
+  --desk-bg: #050505;
+  color-scheme: dark;
+}
+
+/* ---------- Polices (indépendantes du thème) ---------- */
+[data-font='syne'] { --display: 'Syne', sans-serif; --display-weight: 800; --display-spacing: -0.04em; --quote-font: 'Inter', sans-serif; --sans: 'Inter', system-ui, sans-serif; --title-scale: 0.92; }
+[data-font='unbounded'] { --display: 'Unbounded', sans-serif; --display-weight: 600; --display-spacing: -0.04em; --quote-font: 'Inter', sans-serif; --sans: 'Inter', system-ui, sans-serif; --title-scale: 0.8; }
+[data-font='geist'] { --display: 'Geist', sans-serif; --display-weight: 600; --display-spacing: -0.055em; --quote-font: 'Geist', sans-serif; --sans: 'Geist', system-ui, sans-serif; --title-scale: 1; }
+[data-font='jakarta'] { --display: 'Plus Jakarta Sans', sans-serif; --display-weight: 800; --display-spacing: -0.05em; --quote-font: 'Plus Jakarta Sans', sans-serif; --sans: 'Plus Jakarta Sans', system-ui, sans-serif; --title-scale: 0.95; }
+[data-font='instrument'] { --display: 'Instrument Serif', serif; --display-weight: 400; --display-spacing: -0.02em; --quote-font: 'Instrument Serif', serif; --sans: 'Instrument Sans', system-ui, sans-serif; --title-scale: 1.18; }
+
 :root {
   --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --pad: 22px;
@@ -169,7 +205,7 @@ a { color: var(--accent); }
 }
 .title {
   font-family: var(--display); font-weight: var(--display-weight);
-  font-size: clamp(42px, 13vw, 60px); line-height: 0.98; letter-spacing: var(--display-spacing);
+  font-size: calc(clamp(42px, 13vw, 60px) * var(--title-scale, 1)); line-height: 0.98; letter-spacing: var(--display-spacing);
   margin: 0 0 14px; overflow-wrap: anywhere;
 }
 .meta { color: var(--muted); font-size: 14.5px; font-weight: 500; margin: 0 0 26px; }
@@ -332,7 +368,7 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
 .menu-item svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
 .menu-item .d { font-size: 12.5px; font-weight: 400; color: var(--muted); display: block; margin-top: 2px; }
 .menu-item.danger, .menu-item.danger svg { color: #e0453a; }
-.themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 6px 0 4px; }
+.themes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 6px 0 4px; }
 .theme-pick {
   border: 2px solid var(--line); border-radius: 18px; padding: 10px; cursor: pointer; background: var(--surface);
   display: flex; flex-direction: column; gap: 8px; align-items: center; font-size: 13px; font-weight: 600; color: var(--ink);

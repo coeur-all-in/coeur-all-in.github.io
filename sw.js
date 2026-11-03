@@ -1,5 +1,5 @@
 // Service worker : appli disponible hors ligne + clic sur les notifications.
-const VERSION = 'cai-v3';
+const VERSION = 'cai-v4';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/config.js', 'js/content.js', 'js/timeline.js', 'js/matching.js', 'js/date-logic.js',
