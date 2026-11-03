@@ -41,6 +41,39 @@ export async function searchCity(q, signal) {
   })).slice(0, 6);
 }
 
+// ---------- Adresses (numéro + rue) ----------
+export async function searchAddress(q, near, signal) {
+  const bias = near?.lat != null ? `&lat=${near.lat}&lon=${near.lng}` : '';
+  try {
+    const r = await fetch(`${GEOPF}?q=${encodeURIComponent(q)}&index=address&autocomplete=1&limit=6${bias}`, { signal });
+    if (!r.ok) throw new Error(r.status);
+    const j = await r.json();
+    const out = (j.features || []).map((f) => {
+      const p = f.properties;
+      const address = p.label || [p.name, [p.postcode, p.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+      return {
+        label: address, address,
+        sub: [p.type === 'housenumber' ? 'Adresse' : p.type === 'street' ? 'Rue' : p.type === 'municipality' ? 'Ville' : 'Lieu-dit',
+          (p.context || '').split(',').slice(1).join(',').trim()].filter(Boolean).join(' · '),
+        lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0],
+      };
+    });
+    if (out.length) return uniq(out);
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+  }
+  // Secours (et adresses hors de France) : Photon.
+  const pb = near?.lat != null ? `&lat=${near.lat}&lon=${near.lng}&location_bias_scale=0.4` : '';
+  const r = await fetch(`${PHOTON}?q=${encodeURIComponent(q)}&lang=fr&limit=7&layer=house&layer=street${pb}`, { signal });
+  const j = await r.json();
+  return uniq((j.features || []).map((f) => {
+    const p = f.properties;
+    const street = [p.housenumber, p.street || p.name].filter(Boolean).join(' ');
+    const address = [street, [p.postcode, p.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+    return { label: address, address, sub: [p.state, p.country].filter(Boolean).join(' · '), lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] };
+  })).slice(0, 6);
+}
+
 // ---------- Lieux ----------
 const KIND = {
   restaurant: 'Restaurant', cafe: 'Café', bar: 'Bar', pub: 'Pub', fast_food: 'Snack', ice_cream: 'Glacier',

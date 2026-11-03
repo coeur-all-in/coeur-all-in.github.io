@@ -1,7 +1,7 @@
 // Chaque carte du date. Les textes suivent les maquettes ; seuls les prénoms, jours, lieux
 // et accords (il / elle / iel) sont calculés.
 import { GAMES, fill, forms, recognitionLines } from '../content.js';
-import { autocomplete, mapBlock, searchPlace } from '../geo.js';
+import { autocomplete, mapBlock, searchAddress, searchPlace } from '../geo.js';
 import { objectiveFor, partnerOf, resolvePlace } from '../date-logic.js';
 import { at, clock, isDuringDate, moments } from '../timeline.js';
 import { button, card, confirmSheet, dayLabel, h, hourLabel, icon, relDay, sheet, status, toast, weekday } from '../ui.js';
@@ -387,15 +387,20 @@ function tonTourForm(c) {
     // Le lieu : liste déroulante qui se met à jour à chaque lettre, puis carte.
     const mapBox = h('div', { style: { marginTop: '12px' } });
     const showMap = () => mapBox.replaceChildren(...[st.lat != null && mapBlock({ lat: st.lat, lng: st.lng, label: st.name }, { height: 170 })].filter(Boolean));
-    const addr = h('input', { class: 'input', placeholder: 'Rempli automatiquement', maxlength: 120, oninput: (e) => { st.address = e.target.value; st.lat = null; st.lng = null; showMap(); } });
-    const nameIn = h('input', { class: 'input', placeholder: 'Commence à écrire : un resto, un bar, un parc…', maxlength: 90, oninput: (e) => { st.name = e.target.value; } });
+    const addr = h('input', { class: 'input', placeholder: 'Ou cherche l’adresse : 202 rue d’Aub…', maxlength: 140, oninput: (e) => { st.address = e.target.value; st.lat = null; st.lng = null; showMap(); } });
+    const addrField = autocomplete(addr, {
+      search: (q, signal) => searchAddress(q, c.me, signal),
+      onPick: (it) => { st.address = it.address; st.lat = it.lat; st.lng = it.lng; showMap(); },
+      minChars: 3,
+    });
+    const nameIn = h('input', { class: 'input', placeholder: 'Un resto, un bar, un parc… (Noccio)', maxlength: 90, oninput: (e) => { st.name = e.target.value; } });
     const nameField = autocomplete(nameIn, {
       search: (q, signal) => searchPlace(q, c.me, signal),
       onPick: (it) => { st.name = it.name; st.address = it.address; st.lat = it.lat; st.lng = it.lng; addr.value = it.address; showMap(); },
     });
     const proposeNodes = [
-      fieldOf('Le lieu (public, où on s’entend parler)', nameField, mapBox),
-      fieldOf('L’adresse', addr),
+      fieldOf('Le lieu (public, où on s’entend parler)', nameField),
+      fieldOf('L’adresse', addrField, mapBox),
       fieldOf('Et après ? (facultatif)', input('after', 'De là, vous marchez jusqu’au bassin de la Villette.', true)),
       fieldOf('Si ce lieu était un titre (facultatif)', input('title', 'Au bord de l’eau')),
       fieldOf('Un conseil (facultatif)', input('tip', 'Prévois des chaussures adaptées')),
