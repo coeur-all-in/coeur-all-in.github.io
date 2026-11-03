@@ -67,7 +67,13 @@ export function createLocalStore() {
       const candidates = pool(me);
       let best = bestMatch(me, candidates, exclude);
       // En solo on veut toujours pouvoir jouer : on relâche l'âge si besoin.
-      if (!best) best = bestMatch({ ...me, ageMin: 18, ageMax: 99 }, candidates.map((c) => ({ ...c, ageMin: 18, ageMax: 99 })), exclude);
+      // Puis, si aucun profil fictif ne cherche ton genre, on en adapte un (seul ton choix compte).
+      const open = (list) => list.map((c) => ({ ...c, ageMin: 18, ageMax: 99, seeking: [...new Set([...(c.seeking || []), me.gender])] }));
+      const relaxedMe = { ...me, ageMin: 18, ageMax: 99 };
+      if (!best) best = bestMatch(relaxedMe, candidates.map((c) => ({ ...c, ageMin: 18, ageMax: 99 })), exclude);
+      if (!best) best = bestMatch(relaxedMe, open(candidates), exclude);
+      // Tous déjà rencontrés : on recommence la liste.
+      if (!best) best = bestMatch(relaxedMe, open(candidates), []);
       if (!best) return null;
       const createdAt = clock.now();
       const id = 'd-' + uid();
