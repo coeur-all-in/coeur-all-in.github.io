@@ -490,10 +490,21 @@ language sql stable security definer set search_path = public as $$
 $$;
 grant execute on function public.push_public_key() to anon, authenticated;
 
+-- File de notifications ponctuelles (ex. notification test de l'admin).
+create table if not exists public.push_queue (
+  id bigserial primary key,
+  user_id uuid not null references auth.users on delete cascade,
+  body text not null,
+  created_at timestamptz not null default now(),
+  sent_at timestamptz
+);
+alter table public.push_queue enable row level security;
+revoke all on public.push_queue from anon, authenticated;
+
 -- Messages dus maintenant. Les note comme envoyés et renvoie, pour chaque personne, le plus récent
 -- (si plusieurs cartes se sont débloquées d'un coup, un seul message). Ignore ce qui a plus de 3 h.
 -- Les heures suivent js/timeline.js, en heure de Paris.
-create or replace function public.due_pushes() returns table (user_id uuid, date_id uuid, key text, body text)
+create or replace function public.due_card_pushes() returns table (user_id uuid, date_id uuid, key text, body text)
 language plpgsql security definer set search_path = public as $$
 begin
   return query
@@ -557,6 +568,20 @@ begin
   from ins join m on m.m_date = ins.date_id and m.m_user = ins.user_id and m.m_key = ins.key
   where m.m_at > m.m_now - interval '3 hours'
   order by m.m_user, m.m_at desc;
+end $$;
+revoke all on function public.due_card_pushes() from public, anon, authenticated;
+
+-- Tout ce qu'il faut envoyer maintenant : cartes + messages + file ponctuelle.
+create or replace function public.due_pushes() returns table (user_id uuid, date_id uuid, key text, body text)
+language plpgsql security definer set search_path = public as $$
+begin
+  return query select * from public.due_card_pushes();
+  return query
+    with q as (
+      update push_queue set sent_at = now() where sent_at is null and created_at > now() - interval '1 hour'
+      returning push_queue.id, push_queue.user_id, push_queue.body
+    )
+    select q.user_id, null::uuid, 'queue:' || q.id, q.body from q;
 end $$;
 revoke all on function public.due_pushes() from public, anon, authenticated;
 
@@ -651,3 +676,65 @@ insert into public.admins select id from auth.users where email = 'fa67hussain@g
 
 -- Nettoyage : retirer le numéro des anciens profils.
 update public.profiles set data = data - 'phone' where data ? 'phone';
+
+-- ================================================================ Diagnostic (admin)
+-- Vérifie chaque maillon : tâches planifiées, fonction push, clés, abonnements, derniers envois.
+create or replace function public.admin_diagnostics() returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  out jsonb := '{}'::jsonb;
+  me uuid := auth.uid();
+  v jsonb;
+begin
+  if not public.is_admin() then raise exception 'Réservé aux admins'; end if;
+  out := out || jsonb_build_object(
+    'schema_ok', true,
+    'demo_column', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'dates' and column_name = 'demo_offset_ms'),
+    'pg_cron', exists (select 1 from pg_extension where extname = 'pg_cron'),
+    'pg_net', exists (select 1 from pg_extension where extname = 'pg_net'),
+    'vapid', (select vapid_public is not null from push_config where id = 1),
+    'function_url', (select function_url from push_config where id = 1),
+    'my_subscriptions', (select count(*) from push_subscriptions where user_id = me),
+    'all_subscriptions', (select count(*) from push_subscriptions),
+    'last_push', (select max(sent_at) from push_log),
+    'pushes_last_hour', (select count(*) from push_log where sent_at > now() - interval '1 hour')
+  );
+  begin
+    execute $q$ select coalesce(jsonb_agg(jsonb_build_object('job', jobname, 'schedule', schedule, 'active', active)), '[]'::jsonb) from cron.job where jobname like 'cai-%' $q$ into v;
+    out := out || jsonb_build_object('cron_jobs', v);
+    execute $q$ select coalesce(jsonb_agg(x), '[]'::jsonb) from (
+      select j.jobname as job, d.status, d.return_message as message, d.start_time as at
+      from cron.job_run_details d join cron.job j on j.jobid = d.jobid
+      where j.jobname like 'cai-%' order by d.start_time desc limit 4) x $q$ into v;
+    out := out || jsonb_build_object('cron_runs', v);
+  exception when others then out := out || jsonb_build_object('cron_error', sqlerrm);
+  end;
+  begin
+    execute $q$ select coalesce(jsonb_agg(x), '[]'::jsonb) from (
+      select status_code, left(coalesce(content, error_msg, ''), 160) as body, created as at
+      from net._http_response order by created desc limit 3) x $q$ into v;
+    out := out || jsonb_build_object('function_responses', v);
+  exception when others then out := out || jsonb_build_object('net_error', sqlerrm);
+  end;
+  return out;
+end $$;
+revoke all on function public.admin_diagnostics() from public, anon;
+grant execute on function public.admin_diagnostics() to authenticated;
+
+-- Admin : notification test, pour soi et pour son match en cours.
+create or replace function public.admin_test_push() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := auth.uid();
+  other uuid;
+begin
+  if not public.is_admin() then raise exception 'Réservé aux admins'; end if;
+  insert into push_queue (user_id, body) values (me, 'Notification test : tout fonctionne ✓');
+  select case when d.a = me then d.b else d.a end into other from dates d
+  where (d.a = me or d.b = me) and not (me = any(d.closed_by)) and d.date_at > now() - interval '2 days'
+  order by d.created_at desc limit 1;
+  if other is not null then insert into push_queue (user_id, body) values (other, 'Notification test envoyée par l''admin ✓'); end if;
+  return case when other is null then 1 else 2 end;
+end $$;
+revoke all on function public.admin_test_push() from public, anon;
+grant execute on function public.admin_test_push() to authenticated;

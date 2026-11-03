@@ -103,6 +103,12 @@ export async function createSupabaseStore() {
       if (!currentDateId) await this.getDate();
       check(await sb.rpc('admin_set_demo_offset', { p_date: currentDateId, ms: ms == null ? null : Math.round(ms) }));
     },
+    async adminDiagnostics() {
+      return check(await sb.rpc('admin_diagnostics'));
+    },
+    async adminTestPush() {
+      return check(await sb.rpc('admin_test_push'));
+    },
     async adminSkipSearch() {
       check(await sb.rpc('admin_skip_search'));
     },

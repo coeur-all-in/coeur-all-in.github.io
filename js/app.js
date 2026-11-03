@@ -391,6 +391,65 @@ function pickMatch() {
 }
 const avatarOf = (name) => h('div', { class: 'avatar' }, h('span', {}, (name || '?').charAt(0).toUpperCase()));
 
+// ---------- Diagnostic (admin) : pourquoi les notifications / cartes n'arrivent pas ----------
+async function diagnostics() {
+  sheet((close) => {
+    const box = h('div', {}, h('p', { class: 'small' }, 'Vérification…'));
+    const row = (ok, label, hint) => h('div', { class: 'diag' },
+      h('span', { class: `diag-dot ${ok === true ? 'ok' : ok === false ? 'ko' : 'na'}` }, ok === true ? '✓' : ok === false ? '✗' : '–'),
+      h('div', {}, h('div', { class: 'diag-label' }, label), hint && h('div', { class: 'small' }, hint)));
+    (async () => {
+      const reg = await navigator.serviceWorker?.getRegistration().catch(() => null);
+      const sub = await reg?.pushManager?.getSubscription().catch(() => null);
+      let d = null; let err = null;
+      try { d = await S.store.adminDiagnostics(); } catch (e) { err = e.message; }
+      const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+      const resp = d?.function_responses?.[0];
+      const runs = d?.cron_runs || [];
+      const failedRun = runs.find((r) => r.status === 'failed');
+      const date = S.data?.date;
+      box.replaceChildren(h('div', {},
+        h('div', { class: 'section-label', style: { marginTop: 0 } }, 'Ce téléphone'),
+        row(standalone || !/iphone|ipad/i.test(navigator.userAgent), 'Appli installée sur l’écran d’accueil', 'Obligatoire sur iPhone pour les notifications.'),
+        row(notifState() === 'granted', `Permission notifications : ${notifState()}`, notifState() === 'granted' ? null : 'Autorise-les (☰ → Notifications).'),
+        row(!notifOff(), 'Notifications non coupées dans l’appli', notifOff() ? 'Réactive-les dans ☰ → Notifications.' : null),
+        row(!!sub, 'Téléphone abonné aux notifications', sub ? null : 'Touche « Réabonner ce téléphone » ci-dessous.'),
+        h('div', { class: 'section-label' }, 'Serveur (Supabase)'),
+        err ? row(false, 'Diagnostic serveur indisponible', `${err}. Relance le script SQL.`) : [
+          row(d.demo_column, 'Script SQL à jour', d.demo_column ? null : 'Relance supabase/schema.sql dans SQL Editor.'),
+          row(d.pg_cron, 'Extension pg_cron', d.pg_cron ? null : 'Database → Extensions → pg_cron, puis relance le script.'),
+          row(d.pg_net, 'Extension pg_net', d.pg_net ? null : 'Database → Extensions → pg_net, puis relance le script.'),
+          row((d.cron_jobs || []).length >= 2, `Tâches planifiées : ${(d.cron_jobs || []).map((j) => j.job).join(', ') || 'aucune'}`, (d.cron_jobs || []).length >= 2 ? null : 'Relance le script après avoir activé pg_cron et pg_net.'),
+          failedRun ? row(false, `Dernière exécution en échec (${failedRun.job})`, failedRun.message) : row(runs.length ? true : null, runs.length ? 'Tâches exécutées récemment' : 'Pas encore d’exécution'),
+          row(resp ? resp.status_code === 200 : null, resp ? `Fonction push : réponse ${resp.status_code}` : 'Fonction push : aucune réponse encore',
+            !resp ? 'Attends 1 minute après avoir lancé le script.'
+              : resp.status_code === 404 ? 'La fonction « push » n’est pas déployée (Edge Functions → Deploy, nom exact : push).'
+                : resp.status_code === 401 ? 'Désactive « Enforce JWT Verification » dans les réglages de la fonction push.'
+                  : resp.status_code >= 500 ? `Erreur dans la fonction : ${resp.body || ''}` : null),
+          row(d.vapid, 'Clés de notification générées', d.vapid ? null : 'Elles se créent au premier appel réussi de la fonction push.'),
+          row(d.my_subscriptions > 0, `Mes abonnements enregistrés : ${d.my_subscriptions} (total : ${d.all_subscriptions})`, d.my_subscriptions > 0 ? null : 'Réabonne ce téléphone.'),
+          row(d.last_push ? true : null, d.last_push ? `Dernier envoi : ${hourLabel(Date.parse(d.last_push))} (${d.pushes_last_hour} dans l’heure)` : 'Aucune notification envoyée pour l’instant'),
+        ],
+        date && [h('div', { class: 'section-label' }, 'Date en cours'),
+          row(true, `Avance du temps partagée : ${date.demoOffset ? `${Math.round(date.demoOffset / 3600000)} h` : 'aucune (temps réel)'}`),
+          row(true, `Heure simulée : ${weekday(clock.now())} ${hourLabel(clock.now())}`)],
+        h('div', { style: { height: '14px' } }),
+        button('Réabonner ce téléphone', async () => {
+          const r = await enablePush(S.store, { ask: true });
+          toast(r === 'ok' ? 'Téléphone abonné.' : `Échec : ${r}`);
+          close(); diagnostics();
+        }, 'btn quiet'),
+        h('div', { style: { height: '8px' } }),
+        button('Envoyer une notification test', async () => {
+          try { const n = await S.store.adminTestPush(); toast(`Test envoyé à ${n} personne${n > 1 ? 's' : ''} : arrive en moins d’1 minute.`); }
+          catch (e) { toast(e.message); }
+        }),
+      ));
+    })();
+    return [h('h3', {}, 'Diagnostic'), h('p', { class: 'sub' }, 'Chaque ligne rouge dit quoi corriger. Fais-le aussi sur le téléphone de ton match.'), box];
+  });
+}
+
 // ---------- Activation des notifications (obligatoire après la création du compte) ----------
 function needsNotifGate() {
   if (notifOff()) return false;                    // coupées volontairement dans les réglages
@@ -612,8 +671,14 @@ function demoPanel() {
   return h('section', { class: 'demo' },
     h('div', { class: 'k' }, `Mode démo · il est ${weekday(clock.now())} ${hourLabel(clock.now())}${clock.offset ? ' (simulé)' : ''}`),
     button(h('span', {}, `Avancer à ${relDay(target, clock.now())} ${hourLabel(target)}`), async () => {
-      if (S.store.setDemoOffset) await S.store.setDemoOffset(target + 1000 - Date.now()); // partagé avec ton match
-      else clock.jumpTo(target + 1000);
+      if (S.store.setDemoOffset) {
+        try { await S.store.setDemoOffset(target + 1000 - Date.now()); } // partagé avec ton match
+        catch (e) {
+          toast('Impossible d’avancer le temps côté serveur : relance le script SQL (voir ☰ → Diagnostic).');
+          console.warn(e);
+          return;
+        }
+      } else clock.jumpTo(target + 1000);
       await refresh();
       const l = unlocked(S.data.date, S.uid);
       const last = l[l.length - 1];
@@ -796,6 +861,7 @@ function openMenu() {
     hasDate && item('cal', 'Rappels dans mon calendrier', 'Chaque message à l’heure exacte, même appli fermée', () => { downloadCalendar(S.data.date, S.uid); close(); }),
     item('edit', 'Apparence', THEMES.find((t) => t.id === currentTheme())?.label, () => { close(); themeSheet(); }),
     demoOn() && S.store.adminListUsers && item('heart', 'Choisir mon match (admin)', 'Pour tester à deux', () => { close(); pickMatch(); }),
+    S.admin && S.store.adminDiagnostics && item('info', 'Diagnostic (admin)', 'Notifications, tâches, fonction push', () => { close(); diagnostics(); }),
     S.admin && item('clock', 'Mode démo (admin)', demoOn() ? 'Activé : tu peux avancer dans le temps' : 'Désactivé', () => { pref.set('demo', !demoOn()); if (!demoOn()) clock.reset(); close(); route(); }),
     hasDate && item('shield', 'Un souci avec ce date ?', 'Annuler, signaler, se protéger', () => { close(); safety(); }),
     item('pause', S.profile?.paused ? 'Reprendre les rencontres' : 'Mettre en pause', 'On ne te proposera plus personne', async () => {
