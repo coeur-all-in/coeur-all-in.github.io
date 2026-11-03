@@ -183,7 +183,7 @@ function loadLeaflet() {
 const dark = () => ['minuit', 'noir'].includes(document.documentElement.getAttribute('data-theme'));
 
 // Renvoie un bloc carte ; la carte se dessine dès que le bloc est dans la page.
-export function mapBlock(points, { height = 210, zoom = 15 } = {}) {
+export function mapBlock(points, { height = 210, zoom = 15, interactive = true } = {}) {
   const pts = (Array.isArray(points) ? points : [points]).filter((p) => p && p.lat != null && p.lng != null);
   const el = h('div', { class: 'map', style: { height: `${height}px` } });
   if (!pts.length) return null;
@@ -191,7 +191,7 @@ export function mapBlock(points, { height = 210, zoom = 15 } = {}) {
     if (!el.isConnected) { requestAnimationFrame(draw); return; }
     try {
       const L = await loadLeaflet();
-      const map = L.map(el, { zoomControl: false, attributionControl: true, scrollWheelZoom: false, dragging: !L.Browser.mobile, tap: false });
+      const map = L.map(el, { zoomControl: interactive, attributionControl: true, scrollWheelZoom: false, dragging: interactive, touchZoom: interactive, doubleClickZoom: interactive, tap: false });
       const style = dark() ? 'dark_all' : 'rastertiles/voyager';
       L.tileLayer(`https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png`, {
         maxZoom: 19, subdomains: 'abcd',

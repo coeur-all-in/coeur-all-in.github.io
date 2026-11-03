@@ -172,8 +172,9 @@ export const CARDS = {
       body,
       items: [`20h, devant ${pl.name}${pl.address ? ' — ' + pl.address : ''}`, 'Vos numéros à 19h30, juste pour se trouver', pl.tip],
       extra: [
-        mapBlock({ lat: pl.lat, lng: pl.lng, label: pl.name }),
-        h('a', { class: 'link', href: maps, target: '_blank', rel: 'noopener', style: { textAlign: 'left', margin: '4px 0 0', padding: '6px 0', color: 'var(--accent)' } }, 'Ouvrir l’itinéraire ↗'),
+        h('div', { class: 'btn-row', style: { marginTop: '16px' } },
+          button('Voir sur la carte', () => c.goTab?.('rdv'), 'btn quiet'),
+          h('a', { class: 'btn quiet', href: maps, target: '_blank', rel: 'noopener', style: { textAlign: 'center', textDecoration: 'none', lineHeight: '30px' } }, 'Itinéraire ↗')),
         duel && h('button', { type: 'button', class: 'link', style: { textAlign: 'left', margin: '0', padding: '6px 0' }, onclick: () => placeDuel(mineP, theirP, pl.by === c.uid, c) },
           `Tiré au sort entre ${mineP.name} et ${theirP.name} · revoir le tirage`),
       ],
@@ -385,8 +386,8 @@ function tonTourForm(c) {
     });
     const fieldOf = (label, ...ctl) => h('div', { class: 'field' }, h('label', {}, label), ...ctl);
     // Le lieu : liste déroulante qui se met à jour à chaque lettre, puis carte.
-    const mapBox = h('div', { style: { marginTop: '12px' } });
-    const showMap = () => mapBox.replaceChildren(...[st.lat != null && mapBlock({ lat: st.lat, lng: st.lng, label: st.name }, { height: 170 })].filter(Boolean));
+    const found = h('div', { class: 'small', style: { marginTop: '8px' } });
+    const showMap = () => { found.textContent = st.lat != null ? 'Adresse trouvée ✓ Elle apparaîtra sur la carte, dans l’onglet Rendez-vous.' : ''; };
     const addr = h('input', { class: 'input', placeholder: 'Ou cherche l’adresse : 202 rue d’Aub…', maxlength: 140, oninput: (e) => { st.address = e.target.value; st.lat = null; st.lng = null; showMap(); } });
     const addrField = autocomplete(addr, {
       search: (q, signal) => searchAddress(q, c.me, signal),
@@ -400,7 +401,7 @@ function tonTourForm(c) {
     });
     const proposeNodes = [
       fieldOf('Le lieu (public, où on s’entend parler)', nameField),
-      fieldOf('L’adresse', addrField, mapBox),
+      fieldOf('L’adresse', addrField, found),
       fieldOf('Et après ? (facultatif)', input('after', 'De là, vous marchez jusqu’au bassin de la Villette.', true)),
       fieldOf('Si ce lieu était un titre (facultatif)', input('title', 'Au bord de l’eau')),
       fieldOf('Un conseil (facultatif)', input('tip', 'Prévois des chaussures adaptées')),

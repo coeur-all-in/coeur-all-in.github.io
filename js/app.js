@@ -4,6 +4,7 @@ import { forms, portraitText } from './content.js';
 import { askPermission, downloadCalendar, enablePush, isIosBrowser, notifState, notifyNew, setBadge } from './notify.js';
 import { CARDS, TILE, markDone, needsAction } from './screens/cards.js';
 import { onboarding } from './screens/onboarding.js';
+import { chatListView, chatOpensAt, rdvView, renderMessages, threadView } from './screens/tabs.js';
 import { createStore } from './store/index.js';
 import { clock, isDuringDate, nextJump, nextMoment, unlocked } from './timeline.js';
 import { button, card, confirmSheet, countdown, dayLabel, h, hourLabel, icon, relDay, sheet, shortDay, status, toast, weekday } from './ui.js';
@@ -35,19 +36,28 @@ function ctx() {
     portrait: portraitText(partner),
     refresh: () => refresh(true),
     nextMatch: (o) => nextMatch(o),
+    goTab: (t) => goTab(t),
   };
 }
 
 // ---------- Démarrage ----------
 async function boot() {
   setInterval(tick, 1000);
+  // Comme une vraie appli : pas de zoom (pincement, double-tap) sur la page.
+  for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+  let lastTouch = 0;
+  document.addEventListener('touchend', (e) => {
+    const now = Date.now();
+    if (now - lastTouch < 320 && !e.target.closest('.map, input, textarea')) e.preventDefault();
+    lastTouch = now;
+  }, { passive: false });
   // Retour sur l'appli après l'avoir quittée : on repasse par le cœur (sauf en pleine saisie).
   let hiddenAt = 0;
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { hiddenAt = Date.now(); return; }
     const away = hiddenAt && Date.now() - hiddenAt > 10000;
     hiddenAt = 0;
-    const typing = document.querySelector('.sheet-wrap, .duel') || ['onboarding', 'auth', 'splash', 'boot'].includes(S.view);
+    const typing = document.querySelector('.sheet-wrap, .duel') || ['onboarding', 'auth', 'splash', 'boot', 'thread'].includes(S.view);
     if (away && !typing && S.store) {
       showSplash(Promise.resolve(() => (S.uid || !S.store.needsAuth ? afterLogin() : showAuth('login'))));
       return;
@@ -127,20 +137,23 @@ function sync() {
 }
 
 let lastPoll = 0;
+let lastChatPoll = 0;
 async function tick() {
   if (S.view === 'feed') updateCountdown();
-  const every = IS_REMOTE ? 15000 : 2000;
+  document.querySelectorAll('[data-countdown]').forEach((el) => { el.textContent = countdown(Number(el.dataset.countdown) - clock.now()); });
+  if (S.view === 'thread' && Date.now() - lastChatPoll > (IS_REMOTE ? 3000 : 1500) && !document.hidden) { lastChatPoll = Date.now(); pollChat(); }
+  const every = IS_REMOTE ? (S.view === 'search' ? 8000 : 15000) : 2000;
   if (Date.now() - lastPoll < every || document.hidden) return;
   lastPoll = Date.now();
   if (S.view === 'search') return trySearch();
-  if (S.view === 'feed' || S.view === 'card') refresh();
+  if (['feed', 'card', 'rdv', 'chat', 'thread'].includes(S.view)) refresh();
 }
 
 async function refresh(force = false) {
   if (!S.store || !S.profile) return;
   try {
     const data = await S.store.getDate();
-    if (!data) { if (S.view === 'feed' || S.view === 'card') showSearch(); return; }
+    if (!data) { if (['feed', 'card'].includes(S.view)) showSearch(); S.data = null; return; }
     S.data = data;
     const before = S.sig;
     sync();
@@ -148,7 +161,12 @@ async function refresh(force = false) {
     if ((force || before !== S.sig) && !busy) {
       if (S.view === 'card') showCard(S.cardKey, { keepScroll: true });
       else if (S.view === 'feed') showFeed({ keepScroll: true });
+      else if (S.view === 'rdv') showRdv({ keepScroll: true });
+      else if (S.view === 'chat') showChat({ still: true });
+      else if (S.view === 'thread' && S.chatRendered !== chatOpen()) showThread();
     }
+    if (S.chatPolledAt === undefined || Date.now() - S.chatPolledAt > 14000) { S.chatPolledAt = Date.now(); if (S.view !== 'thread') await loadMessages(); }
+    updateChatBadge();
   } catch (e) { console.warn(e); }
 }
 
@@ -345,6 +363,7 @@ function showSearch() {
     h('div', { class: 'spacer' }),
     S.profile.paused ? status('Ton profil est en pause. Menu ☰ → Reprendre.', 'pause')
       : h('p', { class: 'foot' }, IS_REMOTE ? 'Tu peux fermer l’appli : je continue de chercher.' : 'Mode solo : la personne en face est simulée.'),
+    tabbar('home'),
   ));
   renderSearch(S.lastSearch);
   setTimeout(trySearch, IS_REMOTE ? 300 : 2600);
@@ -445,7 +464,7 @@ function showFeed({ keepScroll } = {}) {
     h('div', { class: 'txt' }, 'Ton objectif est atteint ? Écris-moi « fait ».'),
     button('Fait', () => markDone(c)));
 
-  root.replaceChildren(h('main', { class: 'screen plain' },
+  root.replaceChildren(h('main', { class: `screen plain${keepScroll ? ' still' : ''}` },
     topbar(),
     h('div', { class: 'eyebrow' }, S.data.partner ? `Ton date avec ${S.data.partner.firstName}` : 'Ton date'),
     h('h1', { class: 'title', style: { fontSize: '40px', marginBottom: '22px' } }, `${dayLabel(date.dateAt)}`),
@@ -455,6 +474,8 @@ function showFeed({ keepScroll } = {}) {
     doneBar,
     demoOn() && demoPanel(),
     h('p', { class: 'foot' }, during ? 'On n’utilise pas son téléphone, sauf pour mes messages.' : `Je t’écris au bon moment. ${P.Il} reçoit les siens en même temps.`),
+    h('div', { class: 'spacer' }),
+    tabbar('home'),
   ));
   if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
 }
@@ -482,10 +503,149 @@ function showCard(key, { keepScroll } = {}) {
   const y = window.scrollY;
   markSeen(key);
   setBadge(unlocked(S.data.date, S.uid).filter((m) => !seen().has(m.key)).length);
-  root.replaceChildren(h('main', { class: 'screen' },
+  root.replaceChildren(h('main', { class: `screen${keepScroll ? ' still' : ''}` },
     topbar(() => showFeed()),
-    CARDS[key](ctx())));
+    CARDS[key](ctx()),
+    tabbar('home')));
   if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
+}
+
+// ---------- Onglets : Accueil, Rendez-vous, Discussion ----------
+function tabbar(active) {
+  const tab = (id, label, ic) => h('button', {
+    class: `tab${active === id ? ' on' : ''}`, type: 'button', 'aria-current': active === id ? 'page' : null,
+    onclick: () => goTab(id),
+  }, icon(ic), h('span', {}, label), id === 'chat' && h('span', { class: 'badge', id: 'chat-badge', hidden: true }));
+  const bar = h('nav', { class: 'tabbar', 'aria-label': 'Navigation' }, tab('home', 'Accueil', 'home'), tab('rdv', 'Rendez-vous', 'cal'), tab('chat', 'Discussion', 'chat'));
+  queueMicrotask(updateChatBadge);
+  return bar;
+}
+
+function goTab(id) {
+  if (id === 'rdv') return showRdv();
+  if (id === 'chat') return showChat();
+  return S.data ? showFeed() : showSearch();
+}
+
+function showRdv({ keepScroll } = {}) {
+  S.view = 'rdv';
+  const y = window.scrollY;
+  root.replaceChildren(h('main', { class: `screen${keepScroll ? ' still' : ''}` },
+    topbar(),
+    rdvView(S.data ? ctx() : null),
+    h('div', { class: 'spacer' }),
+    tabbar('rdv')));
+  window.scrollTo(0, keepScroll ? y : 0);
+}
+
+const chatOpen = () => {
+  const d = S.data?.date;
+  if (!d) return false;
+  const a = d.answers || {};
+  return Object.values(a).filter((x) => x?.accept === true).length === 2 && clock.now() >= chatOpensAt(d);
+};
+const chatSeenKey = () => `chatSeen.${S.data?.date?.id}`;
+
+function updateChatBadge() {
+  const el = document.getElementById('chat-badge');
+  if (!el) return;
+  const n = Math.max(0, (S.messages || []).filter((m) => m.from !== S.uid).length - pref.get(chatSeenKey(), 0));
+  el.hidden = !n;
+  el.textContent = n > 9 ? '9+' : String(n);
+}
+
+async function loadMessages() {
+  S.messages = chatOpen() ? await S.store.getMessages().catch(() => S.messages || []) : [];
+  return S.messages;
+}
+
+// Onglet Discussion : liste des conversations (en cours en haut, anciennes en dessous).
+async function showChat({ still } = {}) {
+  S.view = 'chat';
+  S.chatRendered = chatOpen();
+  const messages = await loadMessages();
+  const past = await S.store.getPastChats?.().catch(() => []) || [];
+  if (S.view !== 'chat') return;
+  S.past = past;
+  const rows = [];
+  const d = S.data;
+  if (d?.partner) {
+    const accepted = Object.values(d.date.answers || {}).filter((x) => x?.accept === true).length === 2;
+    const last = messages[messages.length - 1];
+    const opens = chatOpensAt(d.date);
+    const unread = Math.max(0, messages.filter((m) => m.from !== S.uid).length - pref.get(chatSeenKey(), 0));
+    rows.push({
+      id: 'current', current: true, name: d.partner.firstName, unread,
+      locked: !chatOpen(),
+      at: last?.at || null,
+      preview: !accepted ? 'S’ouvre 1 h avant votre rendez-vous'
+        : !chatOpen() ? `S’ouvre ${relDay(opens, clock.now())} à ${hourLabel(opens)}`
+          : last ? `${last.from === S.uid ? 'Toi : ' : ''}${last.body}` : 'Dis-lui que tu es en route 👋',
+    });
+  }
+  for (const t of past) {
+    const last = t.messages[t.messages.length - 1];
+    rows.push({ id: t.dateId, name: t.name, at: last.at, preview: `${last.from === S.uid ? 'Toi : ' : ''}${last.body}`, past: t });
+  }
+  root.replaceChildren(h('main', { class: `screen${still ? ' still' : ''}` },
+    topbar(),
+    chatListView(rows, (r) => (r.current ? showThread() : openPastThread(r.past))),
+    h('div', { class: 'spacer' }),
+    tabbar('chat')));
+}
+
+// Conversation en cours, plein écran.
+async function showThread() {
+  S.view = 'thread';
+  S.chatRendered = chatOpen();
+  const d = S.data;
+  if (!d?.partner) return showChat();
+  const messages = await loadMessages();
+  pref.set(chatSeenKey(), messages.filter((m) => m.from !== S.uid).length);
+  const open = chatOpen();
+  const opens = chatOpensAt(d.date);
+  root.replaceChildren(threadView({
+    name: d.partner.firstName,
+    sub: `Votre date · ${weekday(d.date.dateAt)} 20h`,
+    messages, uid: S.uid,
+    onBack: () => showChat(),
+    onSend: open ? async (body) => {
+      const list = document.querySelector('.thread-list');
+      // Affichage immédiat (optimiste), puis synchronisation.
+      S.messages = [...(S.messages || []), { id: `tmp${Date.now()}`, from: S.uid, body, at: clock.now(), pending: true }];
+      renderMessages(list, S.messages, S.uid);
+      list.scrollTop = list.scrollHeight;
+      try { await S.store.sendMessage(body); }
+      catch (e) { toast(/row-level|policy/i.test(e.message) ? 'La discussion n’est pas encore ouverte.' : e.message); }
+      await pollChat(true);
+    } : null,
+    lockedText: open ? '' : `La discussion s’ouvre ${relDay(opens, clock.now())} à ${hourLabel(opens)}, 1 h avant votre rendez-vous.`,
+  }));
+  const list = document.querySelector('.thread-list');
+  list.scrollTop = list.scrollHeight;
+}
+
+async function pollChat(force) {
+  if (S.view !== 'thread' || !chatOpen()) return;
+  const before = (S.messages || []).filter((m) => !m.pending).length;
+  const msgs = await loadMessages();
+  const list = document.querySelector('.thread-list');
+  if (!list || (!force && msgs.length === before)) return;
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+  renderMessages(list, msgs, S.uid);
+  pref.set(chatSeenKey(), msgs.filter((m) => m.from !== S.uid).length);
+  if (atBottom || force) list.scrollTop = list.scrollHeight;
+}
+
+// Ancienne conversation : lecture seule.
+function openPastThread(t) {
+  S.view = 'past-thread';
+  root.replaceChildren(threadView({
+    name: t.name, sub: `Date du ${dayLabel(t.dateAt, { capital: false })}`, messages: t.messages, uid: S.uid,
+    onBack: () => showChat(), onSend: null, lockedText: 'Ancienne discussion · lecture seule',
+  }));
+  const list = document.querySelector('.thread-list');
+  list.scrollTop = list.scrollHeight;
 }
 
 // ---------- Menu ----------
@@ -495,7 +655,7 @@ function openMenu() {
   sheet((close) => [
     h('h3', {}, CONFIG.APP_NAME),
     h('p', { class: 'sub' }, IS_REMOTE ? `${S.profile?.firstName || ''} · ${S.store.email || ''}` : 'Mode solo · la personne en face est simulée'),
-    item('home', 'Le fil', null, () => { close(); route(); }),
+    item('home', 'Accueil', null, () => { close(); goTab('home'); }),
     item('user', 'Mon portrait', 'Modifier mes réponses', () => { close(); showOnboarding(true); }),
     item('bell', 'Notifications', isIosBrowser() ? 'Sur iPhone : installe d’abord l’appli sur l’écran d’accueil'
       : notif === 'granted' ? 'Activées, même appli fermée' : notif === 'denied' ? 'Bloquées : à réactiver dans les réglages du téléphone' : 'Touche pour activer', async () => {

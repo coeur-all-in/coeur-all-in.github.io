@@ -115,6 +115,32 @@ export function createLocalStore() {
       if (d) { d.status = 'closed'; save(s); }
     },
 
+    // Discussion (solo) : la personne simulée répond quelques secondes après.
+    async getMessages() {
+      const d = (s.dates || []).find((x) => x.status === 'active');
+      if (!d) return [];
+      const list = d.messages || [];
+      const now = clock.now();
+      const replies = ['Haha, j’ai hâte de voir ça.', 'Je garde mes questions pour le jour J 😌', 'Tu triches un peu là, non ?', 'D’accord. Mais je ne dis rien de plus.', 'On verra bien sur place.'];
+      const out = [];
+      list.forEach((m, i) => {
+        out.push(m);
+        if (m.from === s.userId && now - m.at > 3500) out.push({ id: `r${i}`, from: d.b, body: replies[i % replies.length], at: m.at + 3500 });
+      });
+      return out;
+    },
+    async getPastChats() {
+      return (s.dates || []).filter((d) => d.status !== 'active' && d.messages?.length).reverse().map((d) => ({
+        dateId: d.id, dateAt: d.dateAt, name: botFor(d.b)?.firstName || 'Ancien date', messages: d.messages,
+      }));
+    },
+    async sendMessage(body) {
+      const d = (s.dates || []).find((x) => x.status === 'active');
+      if (!d) return;
+      d.messages = [...(d.messages || []), { id: `m${Date.now()}`, from: s.userId, body, at: clock.now() }];
+      save(s);
+    },
+
     async report(reason) {
       s.reports = [...(s.reports || []), { at: Date.now(), reason }];
       save(s);

@@ -375,6 +375,29 @@ end $$;
 -- Optionnel : supprimer les anciens comptes de test anonymes (avant les comptes e-mail).
 -- delete from auth.users where is_anonymous;
 
+-- ================================================================ Discussion
+-- Messages entre les deux personnes d'un date : la discussion ouvre 1 h avant le rendez-vous.
+create table if not exists public.messages (
+  id bigserial primary key,
+  date_id uuid not null references public.dates(id) on delete cascade,
+  user_id uuid not null references auth.users on delete cascade,
+  body text not null check (char_length(body) between 1 and 1000),
+  created_at timestamptz not null default now()
+);
+create index if not exists messages_date_idx on public.messages(date_id, id);
+alter table public.messages enable row level security;
+
+drop policy if exists "messages: lire ceux de son date" on public.messages;
+create policy "messages: lire ceux de son date" on public.messages for select using (public.in_date(date_id));
+drop policy if exists "messages: écrire si les deux ont dit oui" on public.messages;
+drop policy if exists "messages: écrire à partir d'1 h avant" on public.messages;
+create policy "messages: écrire à partir d'1 h avant" on public.messages for insert with check (
+  user_id = auth.uid() and public.in_date(date_id)
+  and now() >= (select d.date_at - interval '1 hour' from dates d where d.id = messages.date_id)
+  and (select count(*) from answers x where x.date_id = messages.date_id and x.key = 'accept' and x.value = 'true'::jsonb) = 2
+  and not exists (select 1 from dates d where d.id = messages.date_id and auth.uid() = any(d.closed_by))
+);
+
 -- ================================================================ Notifications push
 -- Chaque minute : due_pushes() calcule les messages à envoyer (match, puis chaque carte à son heure),
 -- puis la fonction Edge « push » les envoie aux téléphones abonnés. Voir supabase/functions/push.
@@ -461,6 +484,7 @@ begin
       ('lieu',     ((s.dday - 1) + time '20:00') at time zone 'Europe/Paris', 'Le lieu est fixé. Et ton pari t’attend.', s.both_ok),
       ('regles',   (s.dday + time '10:00') at time zone 'Europe/Paris', 'Les règles, avant ce soir.', s.both_ok),
       ('objectif', (s.dday + time '14:00') at time zone 'Europe/Paris', 'Ton objectif secret. Personne d’autre ne le sait.', s.both_ok),
+      ('chat',     (s.dday + time '19:00') at time zone 'Europe/Paris', 'La discussion est ouverte. Vous vous voyez dans une heure.', s.both_ok),
       ('numeros',  (s.dday + time '19:30') at time zone 'Europe/Paris', 'Vos numéros, juste pour se trouver.', s.both_ok),
       ('jeu1',     (s.dday + time '20:30') at time zone 'Europe/Paris', 'Premier jeu.', s.both_ok),
       ('jeu2',     (s.dday + time '21:00') at time zone 'Europe/Paris', 'Deuxième jeu.', s.both_ok),
@@ -472,6 +496,15 @@ begin
       ('verdict',  greatest(((s.dday + 1) + time '11:00') at time zone 'Europe/Paris', s.again_at), 'Vous avez répondu tous les deux.', s.both_again)
     ) as k(key, at, body, ready)
     where k.ready and k.at <= now()
+    union all
+    -- Nouveaux messages de la discussion (pour la personne qui les reçoit).
+    select mm.date_id, case when mm.user_id = dt.a then dt.b else dt.a end, 'msg:' || mm.id, mm.created_at,
+           coalesce(pr.data->>'firstName', 'Ton date') || ' : ' || left(mm.body, 90)
+    from messages mm
+    join dates dt on dt.id = mm.date_id
+    left join profiles pr on pr.id = mm.user_id
+    where mm.created_at > now() - interval '15 minutes'
+      and not ((case when mm.user_id = dt.a then dt.b else dt.a end) = any(dt.closed_by))
   ),
   ins as (
     insert into push_log (date_id, user_id, key)

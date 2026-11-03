@@ -38,6 +38,7 @@ const ICONS = {
   pin: '<path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 1113 0c0 5-6.5 11-6.5 11z" stroke="currentColor" stroke-width="1.6" fill="none"/><circle cx="12" cy="10" r="2.3" fill="currentColor"/>',
   phone: '<path d="M6.5 3.5h3l1.5 4-2 1.5a11 11 0 006 6l1.5-2 4 1.5v3a2 2 0 01-2 2A16 16 0 014.5 5.5a2 2 0 012-2z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16v4z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/>',
+  chat: '<path d="M4 6.5A2.5 2.5 0 016.5 4h11A2.5 2.5 0 0120 6.5v8a2.5 2.5 0 01-2.5 2.5H10l-4.5 3.5V17h0A1.5 1.5 0 014 15.5v-9z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/>',
   home: '<path d="M4 11l8-6.5 8 6.5V20h-5.5v-5h-5v5H4v-9z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/>',
 };
 
@@ -76,8 +77,23 @@ export function list(items) {
     h('li', {}, h('span', { class: 'n' }, String(i + 1).padStart(2, '0')), h('span', {}, t))));
 }
 
+// Bouton anti double-tap : pendant une action asynchrone, il est bloqué et affiche un indicateur.
 export function button(label, onClick, cls = 'btn') {
-  return h('button', { class: cls, type: 'button', onclick: onClick }, label);
+  const el = h('button', { class: cls, type: 'button' }, label);
+  let running = false;
+  el.addEventListener('click', async (e) => {
+    if (running) return;
+    const r = onClick?.(e);
+    if (!r || typeof r.then !== 'function') return;
+    running = true;
+    const t = setTimeout(() => { if (el.classList.contains('btn')) el.classList.add('busy'); }, 120);
+    try { await r; } finally {
+      clearTimeout(t);
+      running = false;
+      el.classList.remove('busy');
+    }
+  });
+  return el;
 }
 
 export function status(text, ic = 'check') {

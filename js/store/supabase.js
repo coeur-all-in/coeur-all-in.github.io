@@ -181,6 +181,35 @@ export async function createSupabaseStore() {
       currentDateId = null;
     },
 
+    // ---------- Discussion ----------
+    async getMessages() {
+      if (!currentDateId) return [];
+      const rows = check(await sb.from('messages').select('id,user_id,body,created_at').eq('date_id', currentDateId).order('id', { ascending: true }).limit(500));
+      return rows.map((r) => ({ id: r.id, from: r.user_id, body: r.body, at: Date.parse(r.created_at) }));
+    },
+    // Anciennes discussions : les dates passés ou refermés qui ont au moins un message.
+    async getPastChats() {
+      const dates = check(await sb.from('dates').select('id,a,b,date_at').or(`a.eq.${userId},b.eq.${userId}`)
+        .order('date_at', { ascending: false }).limit(50));
+      const past = dates.filter((d) => d.id !== currentDateId);
+      if (!past.length) return [];
+      const ids = past.map((d) => d.id);
+      const others = [...new Set(past.map((d) => (d.a === userId ? d.b : d.a)))];
+      const [msgs, profs] = await Promise.all([
+        sb.from('messages').select('id,date_id,user_id,body,created_at').in('date_id', ids).order('id', { ascending: true }).limit(2000).then(check),
+        sb.from('profiles').select('id,data').in('id', others).then(check),
+      ]);
+      const names = Object.fromEntries(profs.map((p) => [p.id, p.data?.firstName]));
+      return past.map((d) => {
+        const list = msgs.filter((m) => m.date_id === d.id).map((m) => ({ id: m.id, from: m.user_id, body: m.body, at: Date.parse(m.created_at) }));
+        return { dateId: d.id, dateAt: Date.parse(d.date_at), name: names[d.a === userId ? d.b : d.a] || 'Ancien date', messages: list };
+      }).filter((x) => x.messages.length);
+    },
+    async sendMessage(body) {
+      if (!currentDateId) await this.getDate();
+      check(await sb.from('messages').insert({ date_id: currentDateId, user_id: userId, body }));
+    },
+
     async report(reason) {
       check(await sb.from('reports').insert({ date_id: currentDateId, reason }));
     },
