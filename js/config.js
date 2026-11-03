@@ -10,8 +10,8 @@
 // être commitée, la sécurité repose sur les règles RLS du schéma.
 export const CONFIG = {
   APP_NAME: 'Cœur All In',
-  SUPABASE_URL: '',
-  SUPABASE_ANON_KEY: '',
+  SUPABASE_URL: 'https://tdkxdhzdiuhlhfiyharv.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_acoUgLuhg5XdCAPG-o95MQ_SKg-QoMV',
   // Heure du rendez-vous (non négociable, comme dit la carte).
   DATE_HOUR: 20,
   // Jours possibles pour un date, par ordre de préférence (0 = dimanche … 6 = samedi).

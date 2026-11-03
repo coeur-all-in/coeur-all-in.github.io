@@ -1,7 +1,7 @@
 // Mode multi-utilisateurs : Supabase (Postgres + auth anonyme). Voir supabase/schema.sql.
 import { CONFIG } from '../config.js';
 
-const SDK = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm';
+const SDK = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/+esm';
 
 export async function createSupabaseStore() {
   const { createClient } = await import(SDK);
