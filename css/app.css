@@ -397,6 +397,22 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
 @keyframes ring { from { transform: scale(0.6); opacity: 0.9; } to { transform: scale(1.6); opacity: 0; } }
 @keyframes beat { 0%, 100% { transform: scale(1); } 15% { transform: scale(1.12); } 30% { transform: scale(1); } 45% { transform: scale(1.08); } }
 
+/* ---------- Écran d'ouverture ---------- */
+.screen.splash { justify-content: center; align-items: center; background-size: 100% 100%, auto; }
+.splash-center { display: flex; flex-direction: column; align-items: center; gap: 18px; margin-top: -6vh; }
+.splash-heart {
+  width: 170px; height: 170px; margin: 0 0 18px; border: 0; background: none; cursor: pointer; padding: 0;
+  color: var(--accent); -webkit-tap-highlight-color: transparent;
+}
+.splash-heart svg { width: 86px; height: 86px; filter: drop-shadow(0 8px 30px var(--accent-soft)); }
+.splash-heart:focus-visible { outline: 2px solid var(--accent); outline-offset: 8px; border-radius: 50%; }
+.splash-heart.burst svg { animation: burst 0.38s cubic-bezier(0.3, 0, 0.2, 1) forwards; }
+.splash-heart.burst::before, .splash-heart.burst::after { animation: none; opacity: 0; }
+.splash-brand { font-size: 28px; }
+.splash-hint { margin: 0; color: var(--muted); font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; animation: hint 2.4s ease-in-out infinite; }
+@keyframes burst { 40% { transform: scale(0.85); } 100% { transform: scale(9); opacity: 0; } }
+@keyframes hint { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+
 /* ---------- Chrono ---------- */
 .timer { display: grid; place-items: center; margin: 10px 0 24px; }
 .timer .ring { width: 180px; height: 180px; position: relative; }

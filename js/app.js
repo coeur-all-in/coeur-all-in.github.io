@@ -10,7 +10,7 @@ import { button, card, confirmSheet, countdown, dayLabel, h, hourLabel, icon, re
 
 const root = document.getElementById('app');
 const S = {
-  store: null, uid: null, profile: null, data: null,
+  store: null, uid: null, profile: null, data: null, admin: false,
   view: 'boot', cardKey: null, sig: '', searching: false,
 };
 let installEvt = null;
@@ -21,7 +21,7 @@ const pref = {
   get(k, d) { try { const v = localStorage.getItem('cai.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('cai.' + k, JSON.stringify(v)); } catch { /* rien */ } },
 };
-const demoOn = () => pref.get('demo', !IS_REMOTE);
+const demoOn = () => S.admin && pref.get('demo', !IS_REMOTE);
 
 const seenKey = () => `seen.${S.data?.date?.id}`;
 const seen = () => new Set(pref.get(seenKey(), []));
@@ -42,22 +42,50 @@ function ctx() {
 async function boot() {
   setInterval(tick, 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-  try {
-    S.store = await createStore();
-    ({ userId: S.uid } = await S.store.init());
-    if (S.store.needsAuth) {
-      S.store.onAuth((event) => { if (event === 'PASSWORD_RECOVERY') showNewPassword(); });
-      if (S.store.recovery && S.uid) return showNewPassword();
-      if (!S.uid) return pref.get('seenWelcome', false) ? showAuth('login') : showWelcome();
-    }
-    await afterLogin();
-  } catch (e) {
-    console.error(e);
-    root.replaceChildren(h('main', { class: 'screen' },
-      h('div', { class: 'eyebrow' }, 'Un souci'), h('h1', { class: 'title' }, 'Oups'),
-      h('div', { class: 'body' }, h('p', {}, 'Impossible de démarrer. Vérifie ta connexion et réessaie.'), h('p', { class: 'small' }, String(e.message || e))),
-      h('div', { class: 'spacer' }), button('Réessayer', () => location.reload())));
+  // Le chargement démarre tout de suite, pendant que le cœur bat.
+  const ready = prepare();
+  ready.catch(() => {});
+  showSplash(ready);
+}
+
+// Prépare la connexion et renvoie l'écran à afficher après le toucher du cœur.
+async function prepare() {
+  S.store = await createStore();
+  ({ userId: S.uid } = await S.store.init());
+  if (S.store.needsAuth) {
+    S.store.onAuth((event) => { if (event === 'PASSWORD_RECOVERY' && S.view !== 'splash') showNewPassword(); });
+    if (S.store.recovery && S.uid) return () => showNewPassword();
+    if (!S.uid) return () => (pref.get('seenWelcome', false) ? showAuth('login') : showWelcome());
   }
+  return () => afterLogin();
+}
+
+function showSplash(ready) {
+  S.view = 'splash';
+  let gone = false;
+  const enter = async () => {
+    if (gone) return;
+    gone = true;
+    heart.classList.add('burst');
+    navigator.vibrate?.(15);
+    await new Promise((r) => setTimeout(r, 380));
+    try {
+      const next = await ready;
+      await next();
+    } catch (e) {
+      console.error(e);
+      root.replaceChildren(h('main', { class: 'screen' },
+        h('div', { class: 'eyebrow' }, 'Un souci'), h('h1', { class: 'title' }, 'Oups'),
+        h('div', { class: 'body' }, h('p', {}, 'Impossible de démarrer. Vérifie ta connexion et réessaie.'), h('p', { class: 'small' }, String(e.message || e))),
+        h('div', { class: 'spacer' }), button('Réessayer', () => location.reload())));
+    }
+  };
+  const heart = h('button', { class: 'pulse splash-heart', type: 'button', 'aria-label': 'Entrer dans Cœur All In', onclick: enter }, icon('heart'));
+  root.replaceChildren(h('main', { class: 'screen splash' },
+    h('div', { class: 'splash-center' },
+      heart,
+      h('div', { class: 'brand splash-brand' }, CONFIG.APP_NAME),
+      h('p', { class: 'splash-hint' }, 'Touche le cœur'))));
 }
 
 async function route({ autoOpen = false } = {}) {
@@ -114,6 +142,8 @@ async function refresh(force = false) {
 
 async function afterLogin() {
   S.profile = await S.store.getProfile();
+  S.admin = await S.store.isAdmin?.() || false;
+  if (!S.admin) clock.reset();
   if (S.profile) enablePush(S.store); // resynchronise l'abonnement si déjà autorisé
   if (!S.profile) return S.store.needsAuth ? showOnboarding() : showWelcome();
   await route({ autoOpen: true });
@@ -282,10 +312,10 @@ function pushBanner() {
 // Paliers de la recherche progressive (mêmes seuils que supabase/schema.sql).
 const STEPS = [
   { at: 0, label: 'Précise' },
-  { at: 10, label: '10 min' },
-  { at: 60, label: '1 h' },
-  { at: 360, label: '6 h' },
-  { at: 1440, label: '24 h' },
+  { at: 1, label: '1 min' },
+  { at: 3, label: '3 min' },
+  { at: 7, label: '7 min' },
+  { at: 15, label: '15 min' },
 ];
 
 function showSearch() {
@@ -297,7 +327,7 @@ function showSearch() {
     h('div', { class: 'eyebrow', style: { alignSelf: 'center' } }, 'Recherche en cours'),
     h('h1', { class: 'title', style: { textAlign: 'center', marginBottom: '14px' } }, 'Je cherche'),
     h('div', { class: 'body', style: { textAlign: 'center' } },
-      h('p', {}, 'Je commence exigeant. Si personne ne correspond, j’élargis petit à petit.')),
+      h('p', {}, 'Je commence exigeant, puis j’élargis minute après minute. Au bout de 15 minutes, je te présente la première personne disponible.')),
     S.searchBox,
     pushBanner(),
     h('div', { class: 'spacer' }),
@@ -321,14 +351,14 @@ function renderSearch(info) {
     h('div', { class: 'range-row', style: { marginBottom: '14px' } }, h('span', {}, 'Précise'), h('span', {}, 'Large')),
     h('ol', { class: 'list' },
       [
-        `Jusqu’à ${info.km} km de toi`,
-        `Entre ${Math.max(18, p.ageMin - info.age_pad)} et ${p.ageMax + info.age_pad} ans`,
+        info.km == null ? 'Toutes distances' : `Jusqu’à ${info.km} km de toi`,
+        lvl >= 4 ? 'Tous les âges (18 ans et plus)' : `Entre ${Math.max(18, p.ageMin - info.age_pad)} et ${p.ageMax + info.age_pad} ans`,
         info.min_score > 0 ? `Compatibilité d’au moins ${info.min_score} %` : 'Toutes les compatibilités',
         lvl < 2 ? 'Un soir libre en commun' : 'N’importe quel soir (samedi par défaut)',
       ].map((t, i) => h('li', {}, h('span', { class: 'n' }, String(i + 1).padStart(2, '0')), h('span', {}, t)))),
     h('p', { class: 'small', style: { textAlign: 'center', marginTop: '12px' } },
       [info.waiting > 0 ? `${info.waiting} personne${info.waiting > 1 ? 's' : ''} qui pourrai${info.waiting > 1 ? 'ent' : 't'} te correspondre cherche${info.waiting > 1 ? 'nt' : ''} aussi.` : 'Personne d’autre ne cherche pour l’instant. Parle de l’appli autour de toi !',
-        next ? ` J’élargis dans ${leftTxt}.` : ' Recherche au plus large.'].join('')),
+        next ? ` J’élargis dans ${leftTxt}.` : ' Recherche ouverte à tout le monde : le premier qui arrive, c’est pour toi.'].join('')),
   );
 }
 
@@ -471,7 +501,7 @@ function openMenu() {
     }),
     hasDate && item('cal', 'Rappels dans mon calendrier', 'Chaque message à l’heure exacte, même appli fermée', () => { downloadCalendar(S.data.date, S.uid); close(); }),
     item('edit', 'Apparence', THEMES.find((t) => t.id === currentTheme())?.label, () => { close(); themeSheet(); }),
-    item('clock', 'Mode démo', demoOn() ? 'Activé : tu peux avancer dans le temps' : 'Désactivé', () => { pref.set('demo', !demoOn()); if (!demoOn()) clock.reset(); close(); route(); }),
+    S.admin && item('clock', 'Mode démo (admin)', demoOn() ? 'Activé : tu peux avancer dans le temps' : 'Désactivé', () => { pref.set('demo', !demoOn()); if (!demoOn()) clock.reset(); close(); route(); }),
     hasDate && item('shield', 'Un souci avec ce date ?', 'Annuler, signaler, se protéger', () => { close(); safety(); }),
     item('pause', S.profile?.paused ? 'Reprendre les rencontres' : 'Mettre en pause', 'On ne te proposera plus personne', async () => {
       S.profile = await S.store.saveProfile({ ...S.profile, paused: !S.profile.paused });

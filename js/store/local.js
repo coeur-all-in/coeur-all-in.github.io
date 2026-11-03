@@ -59,6 +59,7 @@ export function createLocalStore() {
       return { userId: s.userId };
     },
     async getProfile() { return s.profile || null; },
+    async isAdmin() { return true; }, // en solo, tout est permis (tests)
     async saveProfile(p) { s.profile = { ...p, id: s.userId }; save(s); return s.profile; },
 
     async findMatch() {

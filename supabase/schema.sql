@@ -132,28 +132,28 @@ $$;
 
 -- ---------------------------------------------------------------- Matching progressif
 --
--- Plus une personne attend, plus ses critères s'assouplissent :
---   niveau | attente      | distance | âge     | compatibilité min | soir commun
---   0      | < 10 min     | x1       | exact   | 55 / 100          | obligatoire
---   1      | < 1 h        | x1,5     | ± 2 ans | 40                | obligatoire
---   2      | < 6 h        | x2       | ± 4 ans | 25                | non
---   3      | < 24 h       | x3       | ± 6 ans | 0                 | non
---   4      | au-delà      | x5       | ± 10 ans| 0                 | non
+-- Plus on attend, plus les critères s'assouplissent. Le niveau retenu pour un couple est celui
+-- de la personne qui attend depuis le plus longtemps (elle « ouvre » la recherche pour les deux).
+--   niveau | attente     | distance        | âge      | compatibilité min | soir commun
+--   0      | < 1 min     | x1              | exact    | 50 / 100          | obligatoire
+--   1      | < 3 min     | x1,5            | ± 2 ans  | 35                | obligatoire
+--   2      | < 7 min     | x2              | ± 4 ans  | 20                | non
+--   3      | < 15 min    | x4              | ± 8 ans  | 0                 | non
+--   4      | ≥ 15 min    | sans limite     | tout âge | 0                 | non   → n'importe qui
 -- Jamais assoupli : le genre recherché (dans les deux sens), la majorité, ne pas revoir quelqu'un déjà proposé.
--- Chaque personne est jugée avec SON propre niveau : on assouplit pour celui qui attend, pas pour l'autre.
 
 create or replace function public.search_level(since timestamptz) returns int
 language sql stable as $$
   select case
-    when since is null or now() - since < interval '10 minutes' then 0
-    when now() - since < interval '1 hour' then 1
-    when now() - since < interval '6 hours' then 2
-    when now() - since < interval '24 hours' then 3
+    when since is null or now() - since < interval '1 minute' then 0
+    when now() - since < interval '3 minutes' then 1
+    when now() - since < interval '7 minutes' then 2
+    when now() - since < interval '15 minutes' then 3
     else 4 end
 $$;
-create or replace function public.lvl_km(l int) returns numeric language sql immutable as $$ select (array[1, 1.5, 2, 3, 5]::numeric[])[l + 1] $$;
-create or replace function public.lvl_age(l int) returns int language sql immutable as $$ select (array[0, 2, 4, 6, 10])[l + 1] $$;
-create or replace function public.lvl_score(l int) returns int language sql immutable as $$ select (array[55, 40, 25, 0, 0])[l + 1] $$;
+create or replace function public.lvl_km(l int) returns numeric language sql immutable as $$ select (array[1, 1.5, 2, 4, 100000]::numeric[])[l + 1] $$;
+create or replace function public.lvl_age(l int) returns int language sql immutable as $$ select (array[0, 2, 4, 8, 200])[l + 1] $$;
+create or replace function public.lvl_score(l int) returns int language sql immutable as $$ select (array[50, 35, 20, 0, 0])[l + 1] $$;
 
 -- Cherche et crée un date pour `uid`. Usage interne (appelé par find_match et par la tâche planifiée).
 create or replace function public.match_for(uid uuid) returns uuid
@@ -178,7 +178,7 @@ begin
   from profiles p
   cross join lateral (
     select public.match_score(me.data, p.data) as sc,
-           public.search_level(p.searching_since) as pl,
+           greatest(ml, public.search_level(p.searching_since)) as lv,
            public.km(me.lat, me.lng, p.lat, p.lng, me.city, p.city) as d,
            extract(year from age(p.birthdate))::int as page,
            extract(year from age(me.birthdate))::int as mage
@@ -188,11 +188,11 @@ begin
     and p.last_seen > now() - interval '14 days'
     and p.gender = any(me.seeking) and me.gender = any(p.seeking)
     and x.page >= 18 and x.mage >= 18
-    and x.page between me.age_min - public.lvl_age(ml) and me.age_max + public.lvl_age(ml)
-    and x.mage between p.age_min - public.lvl_age(x.pl) and p.age_max + public.lvl_age(x.pl)
-    and x.d <= least(me.max_km * public.lvl_km(ml), p.max_km * public.lvl_km(x.pl), 300)
-    and x.sc >= greatest(public.lvl_score(ml), public.lvl_score(x.pl))
-    and (greatest(ml, x.pl) >= 2 or me.availability && p.availability)
+    and x.page between me.age_min - public.lvl_age(x.lv) and me.age_max + public.lvl_age(x.lv)
+    and x.mage between p.age_min - public.lvl_age(x.lv) and p.age_max + public.lvl_age(x.lv)
+    and x.d <= least(me.max_km, p.max_km) * public.lvl_km(x.lv)
+    and x.sc >= public.lvl_score(x.lv)
+    and (x.lv >= 2 or me.availability && p.availability)
     and not exists (select 1 from dates d where (d.a = me.id and d.b = p.id) or (d.a = p.id and d.b = me.id))
     and not public.is_busy(p.id)
   order by x.sc desc, p.searching_since asc
@@ -252,7 +252,7 @@ begin
     'date_id', null,
     'level', l,
     'since', (select searching_since from profiles where id = me.id),
-    'km', round(me.max_km * public.lvl_km(l)),
+    'km', case when l >= 4 then null else round(me.max_km * public.lvl_km(l)) end,
     'age_pad', public.lvl_age(l),
     'min_score', public.lvl_score(l),
     'waiting', (select count(*) from profiles p where p.active and p.searching_since is not null and p.id <> me.id
@@ -260,7 +260,7 @@ begin
   );
 end $$;
 
--- Tâche planifiée : toutes les 5 minutes, tente un match pour chaque personne en attente,
+-- Tâche planifiée : chaque minute, tente un match pour chaque personne en attente,
 -- en commençant par celles qui attendent depuis le plus longtemps. Marche même appli fermée.
 create or replace function public.match_waiting() returns int
 language plpgsql security definer set search_path = public as $$
@@ -367,7 +367,7 @@ begin
   if exists (select 1 from cron.job where jobname = 'cai-match') then
     perform cron.unschedule('cai-match');
   end if;
-  perform cron.schedule('cai-match', '*/5 * * * *', 'select public.match_waiting()');
+  perform cron.schedule('cai-match', '* * * * *', 'select public.match_waiting()');
 exception when others then
   raise notice 'pg_cron indisponible (%). Le matching se fera quand les gens ouvrent l''appli.', sqlerrm;
 end $$;
@@ -504,3 +504,20 @@ begin
 exception when others then
   raise notice 'pg_net / pg_cron indisponible (%). Active-les dans Database → Extensions puis relance ce script.', sqlerrm;
 end $$;
+
+-- ================================================================ Admins
+-- Les admins voient le mode démo (voyage dans le temps). Ajouter un admin :
+--   insert into public.admins select id from auth.users where email = 'adresse@exemple.fr' on conflict do nothing;
+create table if not exists public.admins (
+  user_id uuid primary key references auth.users on delete cascade
+);
+alter table public.admins enable row level security;
+revoke all on public.admins from anon, authenticated;
+
+create or replace function public.is_admin() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from admins where user_id = auth.uid())
+$$;
+grant execute on function public.is_admin() to authenticated;
+
+insert into public.admins select id from auth.users where email = 'fa67hussain@gmail.com' on conflict do nothing;

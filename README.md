@@ -46,20 +46,21 @@ Sécurité : règles RLS (chacun ne voit que son date), numéro débloqué à 19
 
 ## Matching : recherche progressive
 
-Filtres stricts au début, puis élargis avec le temps d'attente de chaque personne (jugée avec son propre niveau) :
+Filtres stricts au début, puis élargis minute après minute. Le niveau d'un couple est celui de la personne
+qui attend depuis le plus longtemps :
 
 | Attente | Distance | Âge | Compatibilité min | Soir commun |
 |---|---|---|---|---|
-| < 10 min | x1 | exact | 55 | obligatoire |
-| < 1 h | x1,5 | ± 2 ans | 40 | obligatoire |
-| < 6 h | x2 | ± 4 ans | 25 | non |
-| < 24 h | x3 | ± 6 ans | 0 | non |
-| au-delà | x5 (300 km max) | ± 10 ans | 0 | non |
+| < 1 min | x1 | exact | 50 | obligatoire |
+| < 3 min | x1,5 | ± 2 ans | 40 | obligatoire |
+| < 7 min | x2 | ± 4 ans | 20 | non |
+| < 15 min | x4 | ± 8 ans | 0 | non |
+| ≥ 15 min | sans limite | tout âge (18+) | 0 | non |
 
 Jamais assouplis : le genre recherché (dans les deux sens), la majorité, ne jamais reproposer quelqu'un.
 Score sur 100 : intention 20 · valeurs 20 · centres d'intérêt 15 · caractère 15 · ambitions 10 · enfants 10 · tabac/alcool 10.
 Les origines ne servent pas au score (donnée sensible, RGPD).
-Une tâche planifiée (`pg_cron`, toutes les 5 min) matche les personnes en attente même appli fermée.
+Une tâche planifiée (`pg_cron`, chaque minute) matche les personnes en attente même appli fermée.
 Les comptes inactifs depuis 14 jours ne sont plus proposés.
 
 ## Notifications
@@ -76,6 +77,14 @@ Les comptes inactifs depuis 14 jours ne sont plus proposés.
 1. *Database → Extensions* : activer `pg_cron` et `pg_net`, puis relancer `supabase/schema.sql`.
 2. *Edge Functions → Deploy a new function → Via Editor* : nom `push`, coller `supabase/functions/push/index.ts`, Deploy.
 3. Dans les détails de la fonction : désactiver **Enforce JWT Verification** (la fonction vérifie son propre secret).
+
+## Admins
+
+Le mode démo (voyage dans le temps) n'est visible que pour les admins (table `admins`). Pour en ajouter un :
+
+```sql
+insert into public.admins select id from auth.users where email = 'adresse@exemple.fr' on conflict do nothing;
+```
 
 ## Lancer en local
 
