@@ -20,7 +20,6 @@ export const BOTS = [
     interests: ['Lecture', 'Randonnée', 'Cuisine', 'Musique live'], ambitions: ['Évoluer dans mon métier', 'Voyager longtemps'],
     traits: { social: 2, tempo: 1, plan: 3, talk: 1 }, intent: 'serieux', kids: 'veux', job: 'Architecte',
     portrait: { first: 'calme, au point que ça se remarque dès les premières minutes', people: 'pose beaucoup de questions et écoute vraiment les réponses', unforgivable: 'l’esprit fermé' },
-    phone: '06 12 34 56 78',
     script: {
       place: noccio,
       phrase: 'Je ne cours pas après les gens. En revanche, quand quelqu’un éveille ma curiosité, j’aime comprendre ce qui le rend unique.',
@@ -34,7 +33,6 @@ export const BOTS = [
     interests: ['Art & expos', 'Voyages', 'Danse', 'Food & restos'], ambitions: ['Créer (art, musique, écriture…)', 'Voyager longtemps'],
     traits: { social: 4, tempo: 4, plan: 2, talk: 4 }, intent: 'voir', kids: 'peutetre', job: 'Illustratrice',
     portrait: { first: 'solaire, mais ne vous fiez pas à la première impression', people: 'retient tout ce qu’on lui raconte, même trois mois plus tard', unforgivable: 'qu’on lui mente sur les petites choses' },
-    phone: '06 98 76 54 32',
     script: {
       place: { leave: true },
       phrase: 'J’ai toujours un carnet sur moi. Si je le sors pendant qu’on parle, c’est plutôt bon signe.',
@@ -48,7 +46,6 @@ export const BOTS = [
     interests: ['Musique live', 'Jeux de société', 'Tech', 'Cinéma'], ambitions: ['Monter ma boîte', 'Acheter un lieu à moi'],
     traits: { social: 5, tempo: 4, plan: 4, talk: 3 }, intent: 'serieux', kids: 'veux', job: 'Développeuse',
     portrait: { first: 'drôle avant même d’avoir dit bonjour', people: 'transforme n’importe quelle file d’attente en soirée', unforgivable: 'le mépris' },
-    phone: '07 11 22 33 44',
     script: {
       place: { title: 'En hauteur', name: 'Le parc de Belleville, en haut des escaliers', address: 'Rue Piat, Paris 20e', lat: 48.8715, lng: 2.3846, after: 'Vous regardez Paris d’en haut, puis vous descendez vers la rue de Belleville.', tip: 'Prévois une veste, ça souffle là-haut' },
       phrase: 'Je pose souvent la question qu’on n’ose pas poser. Tu es prévenu·e.',
@@ -62,7 +59,6 @@ export const BOTS = [
     interests: ['Sport', 'Cuisine', 'Voyages', 'Engagement asso'], ambitions: ['Fonder une famille', 'Monter ma boîte'],
     traits: { social: 3, tempo: 3, plan: 5, talk: 2 }, intent: 'serieux', kids: 'veux', job: 'Kiné',
     portrait: { first: 'posé, du genre à arriver dix minutes en avance', people: 'fait toujours en sorte que tout le monde ait parlé avant de partir', unforgivable: 'qu’on soit dur avec les serveurs' },
-    phone: '06 55 44 33 22',
     script: {
       place: { leave: true },
       phrase: 'Je cuisine pour les gens que j’aime. C’est ma façon de dire les choses.',
@@ -76,7 +72,6 @@ export const BOTS = [
     interests: ['Théâtre', 'Écriture', 'Musique live', 'Photo'], ambitions: ['Créer (art, musique, écriture…)', 'Changer de vie'],
     traits: { social: 3, tempo: 3, plan: 2, talk: 3 }, intent: 'voir', kids: 'peutetre', job: 'Comédien·ne',
     portrait: { first: 'curieux·se de tout, surtout de ce qui ne se dit pas', people: 'lit dans les silences mieux que dans les mots', unforgivable: 'l’indifférence' },
-    phone: '07 66 77 88 99',
     script: {
       place: { leave: true },
       phrase: 'J’ai changé de vie deux fois. Je ne suis pas contre une troisième.',
@@ -90,7 +85,6 @@ export const BOTS = [
     interests: ['Randonnée', 'Mer & plage', 'Sport', 'Voyages'], ambitions: ['Voyager longtemps', 'Avoir du temps pour moi'],
     traits: { social: 4, tempo: 5, plan: 1, talk: 3 }, intent: 'leger', kids: 'peutetre', job: 'Infirmière',
     portrait: { first: 'impossible à tenir en place plus de deux heures', people: 'dit ce qu’elle pense, mais toujours avec le sourire', unforgivable: 'qu’on annule à la dernière minute' },
-    phone: '06 21 43 65 87',
     script: {
       place: { leave: true },
       phrase: 'J’ai dormi dans plus de trains que d’hôtels. Je te raconterai le pire.',
@@ -104,7 +98,6 @@ export const BOTS = [
     interests: ['Cinéma', 'Lecture', 'Jeux de société', 'Cuisine'], ambitions: ['Acheter un lieu à moi', 'Fonder une famille'],
     traits: { social: 2, tempo: 2, plan: 4, talk: 2 }, intent: 'serieux', kids: 'veux', job: 'Prof d’histoire',
     portrait: { first: 'discret, jusqu’à ce qu’on parle de cinéma', people: 'se souvient de l’anniversaire de tout le monde', unforgivable: 'les gens qui parlent pendant les films' },
-    phone: '06 10 20 30 40',
     script: {
       place: { leave: true },
       phrase: 'J’ai vu le même film quarante fois. Je ne te dirai pas lequel avant le troisième jeu.',
@@ -118,7 +111,6 @@ export const BOTS = [
     interests: ['Lecture', 'Méditation / yoga', 'Art & expos', 'Animaux'], ambitions: ['M’engager pour une cause', 'Créer (art, musique, écriture…)'],
     traits: { social: 2, tempo: 2, plan: 3, talk: 2 }, intent: 'serieux', kids: 'peutetre', job: 'Libraire',
     portrait: { first: 'douce, mais avec un avis sur tout', people: 'offre des livres au lieu de donner des conseils', unforgivable: 'la cruauté gratuite' },
-    phone: '07 98 87 76 65',
     script: {
       place: { leave: true },
       phrase: 'Je finis toujours les livres que je commence. Même les mauvais. Surtout les mauvais.',
@@ -132,7 +124,6 @@ export const BOTS = [
     interests: ['Mode', 'Danse', 'Food & restos', 'Fête'], ambitions: ['Monter ma boîte', 'Évoluer dans mon métier'],
     traits: { social: 5, tempo: 4, plan: 4, talk: 4 }, intent: 'serieux', kids: 'veux', job: 'Avocate',
     portrait: { first: 'celle qu’on entend rire avant de la voir', people: 'défend ses amis comme si c’étaient des clients', unforgivable: 'la mauvaise foi' },
-    phone: '06 33 22 11 00',
     script: {
       place: { leave: true },
       phrase: 'Je gagne presque toujours les débats. Je perds presque toujours au pierre-feuille-ciseaux.',
@@ -146,7 +137,6 @@ export const BOTS = [
     interests: ['Photo', 'Voyages', 'Musique live', 'Mer & plage'], ambitions: ['Changer de vie', 'Voyager longtemps'],
     traits: { social: 4, tempo: 3, plan: 2, talk: 3 }, intent: 'voir', kids: 'non', job: 'Photographe',
     portrait: { first: 'souriant, même sous la pluie', people: 'se souvient des visages mieux que des prénoms', unforgivable: 'qu’on ne dise pas merci' },
-    phone: '07 12 12 12 12',
     script: {
       place: { leave: true },
       phrase: 'Je prends une seule photo par soirée. Une seule. On verra si tu es dessus.',

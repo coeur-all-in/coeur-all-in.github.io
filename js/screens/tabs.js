@@ -53,7 +53,7 @@ export function rdvView(c) {
 
   const recog = placeKnown ? recognitionLines(partner) : [];
   const plan = [
-    ['regles', 'Les règles'], ['objectif', 'Ton objectif secret'], ['numeros', 'Vos numéros'],
+    ['regles', 'Les règles'], ['objectif', 'Ton objectif secret'], ['discussion', 'La discussion s’ouvre'],
     ['rdv', 'Rendez-vous'], ['jeu1', 'Premier jeu'], ['jeu2', 'Deuxième jeu'], ['jeu3', 'Troisième jeu · on peut parler boulot'],
     ['jeu4', 'Quatrième jeu'], ['pari', 'Les paris'], ['reveal', 'On révèle'],
   ].map(([k, label]) => {

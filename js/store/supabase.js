@@ -123,18 +123,17 @@ export async function createSupabaseStore() {
     async getProfile() {
       const row = check(await sb.from('profiles').select('data, active').eq('id', userId).maybeSingle());
       if (!row) return null;
-      const c = check(await sb.from('contacts').select('phone').eq('id', userId).maybeSingle());
-      return { ...row.data, id: userId, phone: c?.phone || '', paused: row.active === false };
+      const { phone, ...data } = row.data || {}; // anciens profils : on ignore le numéro
+      return { ...data, id: userId, paused: row.active === false };
     },
 
     async saveProfile(p) {
-      const { phone, ...data } = p;
+      const { phone, ...data } = p; // plus de numéro : jamais envoyé
       check(await sb.from('profiles').upsert({
         id: userId, data, gender: p.gender, seeking: p.seeking, birthdate: p.birthdate,
         age_min: p.ageMin, age_max: p.ageMax, city: p.city, lat: p.lat ?? null, lng: p.lng ?? null,
         max_km: p.maxKm, availability: p.availability, active: p.paused !== true, updated_at: new Date().toISOString(),
       }));
-      check(await sb.from('contacts').upsert({ id: userId, phone: phone || null }));
       return { ...p, id: userId };
     },
 
@@ -170,10 +169,6 @@ export async function createSupabaseStore() {
       }));
     },
 
-    async partnerPhone() {
-      if (!currentDateId) return null;
-      return check(await sb.rpc('partner_phone', { p_date: currentDateId }));
-    },
 
     async closeDate() {
       if (!currentDateId) return;

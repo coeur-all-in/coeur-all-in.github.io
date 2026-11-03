@@ -105,10 +105,6 @@ export function createLocalStore() {
       save(s);
     },
 
-    async partnerPhone() {
-      const d = (s.dates || []).find((x) => x.status === 'active');
-      return d ? botFor(d.b)?.phone : null;
-    },
 
     async closeDate() {
       const d = (s.dates || []).find((x) => x.status === 'active');

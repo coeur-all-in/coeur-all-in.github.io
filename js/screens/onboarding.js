@@ -192,8 +192,6 @@ function steps(p) {
     {
       eyebrow: 'Dernière chose', title: 'Le jour J',
       render: () => [
-        field('Ton numéro de téléphone', text(() => p.phone, (v) => { p.phone = v; }, { type: 'tel', placeholder: '06 12 34 56 78', autocomplete: 'tel' })),
-        h('p', { class: 'small', style: { margin: '-10px 0 26px' } }, 'Il n’est donné à la personne qu’à 19h30 le jour du date, juste pour se trouver.'),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: p.consent18, onchange: (e) => { p.consent18 = e.target.checked; } }),
           h('span', {}, 'J’ai 18 ans ou plus.')),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: p.consentData, onchange: (e) => { p.consentData = e.target.checked; } }),
@@ -202,7 +200,6 @@ function steps(p) {
           h('span', {}, 'Je m’engage à respecter l’autre, à venir ou prévenir, et à rester dans un lieu public au premier rendez-vous.')),
       ],
       validate: () => {
-        if (!/^[+\d][\d\s.-]{7,}$/.test(p.phone || '')) return 'Ton numéro semble incomplet.';
         if (!p.consent18 || !p.consentData || !p.consentSafety) return 'Les trois cases sont nécessaires.';
         return null;
       },
@@ -218,7 +215,7 @@ export function defaults(existing) {
     style: [], values: [], interests: [],
     traits: { social: 3, tempo: 3, plan: 3, talk: 3 },
     portrait: { first: '', people: '', unforgivable: '' },
-    job: '', ambitions: [], intent: null, kids: null, smoke: null, drink: null, phone: '',
+    job: '', ambitions: [], intent: null, kids: null, smoke: null, drink: null,
     consent18: false, consentData: false, consentSafety: false,
     ...structuredClone(existing || {}),
   };

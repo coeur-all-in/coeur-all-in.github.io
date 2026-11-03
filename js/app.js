@@ -522,6 +522,7 @@ function tabbar(active) {
 }
 
 function goTab(id) {
+  if (id === 'thread') return showThread();
   if (id === 'rdv') return showRdv();
   if (id === 'chat') return showChat();
   return S.data ? showFeed() : showSearch();

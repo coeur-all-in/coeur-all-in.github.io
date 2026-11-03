@@ -17,7 +17,7 @@ jusqu'au rendez-vous et pendant la soirée : lieu, phrase, règles, objectif sec
 | J-1, 20h | **Le lieu est fixé** | Lieu, itinéraire, comment le/la reconnaître + **ton pari** à écrire |
 | J, 10h | **Les règles** | Téléphone rangé, pas de boulot avant 21h30, pierre-feuille-ciseaux |
 | J, 14h | **Objectif secret** | Chacun le sien. Bouton « Fait » pendant la soirée |
-| J, 19h30 | **19h30** | Le numéro de l'autre, juste pour se trouver |
+| J, 19h | **La discussion** | Elle s'ouvre, juste pour se trouver (texte uniquement) |
 | J, 20h30 → 22h | **4 jeux** | Deux vérités · Yeux fermés · La question · Trente secondes (chrono intégré) |
 | J, 22h15 | **Son pari** | On lit le pari de l'autre à voix haute, on tranche |
 | J, 22h40 | **On révèle** | Les deux objectifs, à quelle heure ils ont été atteints, son métier |
@@ -42,7 +42,7 @@ Le **mode démo** (dans le menu) ajoute un bouton « Avancer au prochain message
 4. L'URL et la clé publique sont dans [`js/config.js`](js/config.js).
 
 Comptes : e-mail + mot de passe (8 caractères min.), mot de passe oublié, déconnexion, suppression du compte.
-Sécurité : règles RLS (chacun ne voit que son date), numéro débloqué à 19h30 le jour J (`partner_phone()`).
+Sécurité : règles RLS (chacun ne voit que son date), discussion ouverte seulement 1 h avant le date. Aucun numéro de téléphone n'est demandé.
 
 ## Matching : recherche progressive
 
@@ -117,4 +117,4 @@ supabase/schema.sql                        base de données + sécurité
 
 18 ans minimum, premier rendez-vous toujours dans un lieu public, bouton « Un souci avec ce date ? »
 (signaler, annuler, numéros d'urgence 17 / 112 / 114 / 3919), suppression du compte en un geste,
-position arrondie à ~100 m, numéro révélé uniquement le jour J.
+position arrondie à ~100 m, aucun numéro de téléphone collecté.

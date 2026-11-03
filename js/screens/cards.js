@@ -15,7 +15,7 @@ export const TILE = {
   lieu: (c) => ({ e: 'Le lieu est fixé', t: place(c).title || place(c).name }),
   regles: () => ({ e: 'Avant ce soir', t: 'Les règles' }),
   objectif: (c) => ({ e: 'Personne d’autre ne le sait', t: objectiveFor(c.date, c.uid, c.partner?.gender).title }),
-  numeros: () => ({ e: 'Juste pour se trouver', t: '19h30' }),
+  discussion: () => ({ e: 'Juste pour se trouver', t: 'La discussion' }),
   jeu1: () => ({ e: GAMES[0].eyebrow, t: GAMES[0].title }),
   jeu2: () => ({ e: GAMES[1].eyebrow, t: GAMES[1].title }),
   jeu3: () => ({ e: GAMES[2].eyebrow, t: GAMES[2].title }),
@@ -170,7 +170,7 @@ export const CARDS = {
       title: pl.title || pl.name,
       meta: dateMeta(c),
       body,
-      items: [`20h, devant ${pl.name}${pl.address ? ' — ' + pl.address : ''}`, 'Vos numéros à 19h30, juste pour se trouver', pl.tip],
+      items: [`20h, devant ${pl.name}${pl.address ? ' — ' + pl.address : ''}`, 'La discussion s’ouvre à 19h, juste pour se trouver', pl.tip],
       extra: [
         h('div', { class: 'btn-row', style: { marginTop: '16px' } },
           button('Voir sur la carte', () => c.goTab?.('rdv'), 'btn quiet'),
@@ -195,7 +195,7 @@ export const CARDS = {
       meta: `Ce soir 20h  ·  Devant ${pl.name}${pl.address ? ', ' + pl.address : ''}`,
       body: ['Rien à retenir par cœur. Elles sont là pour que la soirée ne ressemble pas à un entretien d’embauche.'],
       items: [
-        'Vos numéros arrivent à 19h30, juste pour se trouver',
+        'La discussion s’ouvre à 19h, juste pour se trouver',
         'On n’utilise pas son téléphone, sauf pour mes messages',
         'On n’évoque pas sa vie professionnelle avant 21h30',
         'Tout choix qui prend plus de quelques secondes se tranche au pierre-feuille-ciseaux',
@@ -225,26 +225,16 @@ export const CARDS = {
     });
   },
 
-  numeros(c) {
+  discussion(c) {
     const P = pf(c);
     const pl = place(c);
-    const num = h('div', { class: 'phone-big' }, '…');
-    const links = h('div', { class: 'btn-row' });
-    c.store.partnerPhone().then((tel) => {
-      num.textContent = tel || 'Indisponible';
-      if (tel) {
-        const t = tel.replace(/[^\d+]/g, '');
-        links.replaceChildren(
-          h('a', { class: 'btn quiet', href: `tel:${t}`, style: { textAlign: 'center', textDecoration: 'none', lineHeight: '30px' } }, 'Appeler'),
-          h('a', { class: 'btn quiet', href: `sms:${t}`, style: { textAlign: 'center', textDecoration: 'none', lineHeight: '30px' } }, 'SMS'));
-      }
-    }).catch(() => { num.textContent = 'Indisponible'; });
     return card({
       eyebrow: 'Juste pour se trouver',
-      title: '19h30',
-      meta: `Le numéro de ${c.partner.firstName}`,
-      before: h('div', {}, num, links),
-      items: ['On ne s’en sert que pour se trouver', `20h, devant ${pl.name}`, `${P.Il} a le tien aussi`],
+      title: 'La discussion',
+      meta: `Ouverte avec ${c.partner.firstName}`,
+      body: [`Vous pouvez vous écrire à partir de maintenant. Juste ce qu’il faut pour se trouver : on se voit dans une heure.`],
+      items: ['Texte uniquement, pas de photo', `20h, devant ${pl.name}`, `${P.Il} attend peut-être déjà ton message`],
+      actions: button('Ouvrir la discussion', () => c.goTab?.('thread')),
       foot: 'Ensuite, téléphone dans la poche.',
     });
   },
@@ -323,8 +313,8 @@ export const CARDS = {
         eyebrow: 'C’est réciproque',
         title: 'On se revoit',
         meta: `${c.partner.firstName} aussi`,
-        body: ['Vous avez tous les deux envie de vous revoir. À partir de maintenant, je vous laisse faire : vous avez vos numéros.'],
-        actions: [button('Terminer ce date', () => c.nextMatch({ quiet: true }), 'btn ghost')],
+        body: ['Vous avez tous les deux envie de vous revoir. À partir de maintenant, je vous laisse faire : la discussion reste ouverte encore deux jours, échangez-y ce que vous voulez.'],
+        actions: [button('Aller à la discussion', () => c.goTab?.('thread')), button('Terminer ce date', () => c.nextMatch({ quiet: true }), 'link')],
         foot: 'Ça m’a fait plaisir.',
       });
     }

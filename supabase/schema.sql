@@ -24,12 +24,6 @@ create table if not exists public.profiles (
   updated_at timestamptz not null default now()
 );
 
--- Le numéro n'est lisible par personne via l'API : seulement par partner_phone(), à 19h30 le jour J.
-create table if not exists public.contacts (
-  id uuid primary key references auth.users on delete cascade,
-  phone text
-);
-
 create table if not exists public.dates (
   id uuid primary key default gen_random_uuid(),
   a uuid not null references public.profiles(id) on delete cascade,
@@ -290,22 +284,13 @@ language sql security definer set search_path = public as $$
   delete from auth.users where id = auth.uid()
 $$;
 
--- Le numéro de l'autre, seulement à partir de 19h30 le jour J, et si les deux ont dit oui.
-create or replace function public.partner_phone(p_date uuid) returns text
-language sql stable security definer set search_path = public as $$
-  select c.phone
-  from dates d
-  join contacts c on c.id = case when d.a = auth.uid() then d.b else d.a end
-  where d.id = p_date
-    and auth.uid() in (d.a, d.b)
-    and now() >= d.date_at - interval '30 minutes'
-    and (select count(*) from answers x where x.date_id = d.id and x.key = 'accept' and x.value = 'true'::jsonb) = 2
-$$;
+-- Plus de numéros de téléphone : on supprime la table et la fonction s'ils existent (données inutiles).
+drop function if exists public.partner_phone(uuid);
+drop table if exists public.contacts;
 
 -- ---------------------------------------------------------------- Sécurité (RLS)
 
 alter table public.profiles enable row level security;
-alter table public.contacts enable row level security;
 alter table public.dates enable row level security;
 alter table public.answers enable row level security;
 alter table public.reports enable row level security;
@@ -331,9 +316,6 @@ create policy "profil: modifier le sien" on public.profiles for update using (id
 drop policy if exists "profil: supprimer le sien" on public.profiles;
 create policy "profil: supprimer le sien" on public.profiles for delete using (id = auth.uid());
 
-drop policy if exists "contact: le sien" on public.contacts;
-create policy "contact: le sien" on public.contacts for all using (id = auth.uid()) with check (id = auth.uid());
-
 drop policy if exists "date: participants" on public.dates;
 create policy "date: participants" on public.dates for select using (auth.uid() in (a, b));
 
@@ -355,10 +337,8 @@ revoke all on function public.match_waiting() from public, anon, authenticated;
 revoke all on function public.delete_account() from public, anon;
 grant execute on function public.delete_account() to authenticated;
 revoke all on function public.close_date(uuid) from public, anon;
-revoke all on function public.partner_phone(uuid) from public, anon;
 grant execute on function public.find_match() to authenticated;
 grant execute on function public.close_date(uuid) to authenticated;
-grant execute on function public.partner_phone(uuid) to authenticated;
 
 -- ---------------------------------------------------------------- Tâche planifiée (pg_cron)
 do $$
@@ -485,7 +465,6 @@ begin
       ('regles',   (s.dday + time '10:00') at time zone 'Europe/Paris', 'Les règles, avant ce soir.', s.both_ok),
       ('objectif', (s.dday + time '14:00') at time zone 'Europe/Paris', 'Ton objectif secret. Personne d’autre ne le sait.', s.both_ok),
       ('chat',     (s.dday + time '19:00') at time zone 'Europe/Paris', 'La discussion est ouverte. Vous vous voyez dans une heure.', s.both_ok),
-      ('numeros',  (s.dday + time '19:30') at time zone 'Europe/Paris', 'Vos numéros, juste pour se trouver.', s.both_ok),
       ('jeu1',     (s.dday + time '20:30') at time zone 'Europe/Paris', 'Premier jeu.', s.both_ok),
       ('jeu2',     (s.dday + time '21:00') at time zone 'Europe/Paris', 'Deuxième jeu.', s.both_ok),
       ('jeu3',     (s.dday + time '21:30') at time zone 'Europe/Paris', 'Troisième jeu. Et vous pouvez parler boulot.', s.both_ok),
@@ -554,3 +533,6 @@ $$;
 grant execute on function public.is_admin() to authenticated;
 
 insert into public.admins select id from auth.users where email = 'fa67hussain@gmail.com' on conflict do nothing;
+
+-- Nettoyage : retirer le numéro des anciens profils.
+update public.profiles set data = data - 'phone' where data ? 'phone';

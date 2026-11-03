@@ -59,7 +59,7 @@ export function moments(date, me) {
     { key: 'lieu', at: at(D, -1, 20), notif: 'Le lieu est fixé.', ready: bothAccepted },
     { key: 'regles', at: at(D, 0, 10), notif: 'Les règles, avant ce soir.', ready: bothAccepted },
     { key: 'objectif', at: at(D, 0, 14), notif: 'Personne d’autre ne le sait.', ready: bothAccepted },
-    { key: 'numeros', at: at(D, 0, 19, 30), notif: 'Vos numéros, juste pour se trouver.', ready: bothAccepted },
+    { key: 'discussion', at: at(D, 0, 19), notif: 'La discussion est ouverte. Vous vous voyez dans une heure.', ready: bothAccepted },
     { key: 'jeu1', at: at(D, 0, 20, 30), notif: 'Premier jeu.', ready: bothAccepted },
     { key: 'jeu2', at: at(D, 0, 21, 0), notif: 'Deuxième jeu.', ready: bothAccepted },
     { key: 'jeu3', at: at(D, 0, 21, 30), notif: 'Troisième jeu. Et vous pouvez parler boulot.', ready: bothAccepted },
