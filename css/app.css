@@ -449,7 +449,8 @@ textarea.input { min-height: 104px; resize: vertical; line-height: 1.5; }
   backdrop-filter: saturate(160%) blur(18px); -webkit-backdrop-filter: saturate(160%) blur(18px);
   border-top: 1px solid var(--line);
 }
-.screen:has(.tabbar) { padding-bottom: calc(var(--safe-bottom) + 96px); }
+#app:has(> .tabbar) > .screen { padding-bottom: calc(var(--safe-bottom) + 96px); }
+.tabbar { animation: none !important; }
 @media (min-width: 980px) {
   .tabbar { left: auto; right: 40px; transform: none; width: 460px; bottom: 24px; border-radius: 0 0 34px 34px; padding-bottom: 12px; }
 }

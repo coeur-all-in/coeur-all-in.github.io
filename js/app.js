@@ -517,7 +517,8 @@ function tabbar(active) {
     onclick: () => goTab(id),
   }, icon(ic), h('span', {}, label), id === 'chat' && h('span', { class: 'badge', id: 'chat-badge', hidden: true }));
   const bar = h('nav', { class: 'tabbar', 'aria-label': 'Navigation' }, tab('home', 'Accueil', 'home'), tab('rdv', 'Rendez-vous', 'cal'), tab('chat', 'Discussion', 'chat'));
-  queueMicrotask(updateChatBadge);
+  // La barre est sortie de l'écran animé : elle reste parfaitement fixe d'un onglet à l'autre.
+  queueMicrotask(() => { if (bar.isConnected) root.append(bar); updateChatBadge(); });
   return bar;
 }
 
