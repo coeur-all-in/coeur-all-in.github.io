@@ -355,6 +355,10 @@ end $$;
 -- Optionnel : supprimer les anciens comptes de test anonymes (avant les comptes e-mail).
 -- delete from auth.users where is_anonymous;
 
+-- ================================================================ Admins
+-- Les admins voient le mode démo (voyage dans le temps). Ajouter un admin :
+--   insert into public.admins select id from auth.users where email = 'adresse@exemple.fr' on conflict do nothing;
+
 -- ================================================================ Discussion
 -- Messages entre les deux personnes d'un date : la discussion ouvre 1 h avant le rendez-vous.
 create table if not exists public.messages (
@@ -373,7 +377,7 @@ drop policy if exists "messages: écrire si les deux ont dit oui" on public.mess
 drop policy if exists "messages: écrire à partir d'1 h avant" on public.messages;
 create policy "messages: écrire à partir d'1 h avant" on public.messages for insert with check (
   user_id = auth.uid() and public.in_date(date_id)
-  and now() >= (select d.date_at - interval '1 hour' from dates d where d.id = messages.date_id)
+  and (now() >= (select d.date_at - interval '1 hour' from dates d where d.id = messages.date_id) or public.is_admin())
   and (select count(*) from answers x where x.date_id = messages.date_id and x.key = 'accept' and x.value = 'true'::jsonb) = 2
   and not exists (select 1 from dates d where d.id = messages.date_id and auth.uid() = any(d.closed_by))
 );
@@ -517,9 +521,6 @@ exception when others then
   raise notice 'pg_net / pg_cron indisponible (%). Active-les dans Database → Extensions puis relance ce script.', sqlerrm;
 end $$;
 
--- ================================================================ Admins
--- Les admins voient le mode démo (voyage dans le temps). Ajouter un admin :
---   insert into public.admins select id from auth.users where email = 'adresse@exemple.fr' on conflict do nothing;
 create table if not exists public.admins (
   user_id uuid primary key references auth.users on delete cascade
 );
@@ -531,6 +532,15 @@ language sql stable security definer set search_path = public as $$
   select exists (select 1 from admins where user_id = auth.uid())
 $$;
 grant execute on function public.is_admin() to authenticated;
+
+-- Admin (mode démo) : passer directement à la recherche la plus large, pour tester sans attendre 15 min.
+create or replace function public.admin_skip_search() returns void
+language sql security definer set search_path = public as $$
+  update profiles set searching_since = now() - interval '1 day'
+  where id = auth.uid() and public.is_admin() and searching_since is not null
+$$;
+revoke all on function public.admin_skip_search() from public, anon;
+grant execute on function public.admin_skip_search() to authenticated;
 
 insert into public.admins select id from auth.users where email = 'fa67hussain@gmail.com' on conflict do nothing;
 

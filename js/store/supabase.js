@@ -92,6 +92,9 @@ export async function createSupabaseStore() {
       recovery = false;
       history.replaceState(null, '', location.pathname);
     },
+    async adminSkipSearch() {
+      check(await sb.rpc('admin_skip_search'));
+    },
     async isAdmin() {
       try { return Boolean(check(await sb.rpc('is_admin'))); } catch { return false; }
     },

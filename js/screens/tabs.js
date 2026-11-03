@@ -43,7 +43,7 @@ export function rdvView(c) {
           href: `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(pl.lat != null ? `${pl.lat},${pl.lng}` : `${pl.name}, ${pl.address}`)}` }, 'Itinéraire ↗'),
         duel ? button('Revoir le tirage', () => placeDuel(mine, theirs, pl.by === c.uid, c), 'btn quiet') : null),
     ]
-    : [
+    : c.adminPreview ? adminPreview(c, pl, mine, theirs) : [
       h('div', { class: 'section-label' }, 'Le lieu'),
       h('div', { class: 'map-locked' },
         icon('pin'),
@@ -71,6 +71,27 @@ export function rdvView(c) {
     recog.length > 0 && [h('div', { class: 'section-label' }, `Pour ${P.le} reconnaître`), h('div', { class: 'body' }, h('p', { style: { fontSize: '16px' } }, recog.join(' · ')))],
     h('div', { class: 'section-label' }, `La soirée · ${weekday(date.dateAt)}`),
     h('ol', { class: 'list plan' }, plan),
+  ];
+}
+
+// Mode démo (admin) : la carte est visible avant la révélation, pour vérifier les adresses.
+function adminPreview(c, pl, mine, theirs) {
+  const pts = [];
+  const add = (p, who) => { if (p && !p.leave && p.name) pts.push({ ...p, who }); };
+  add(mine, 'Ta proposition');
+  add(theirs, 'Sa proposition');
+  const chosen = pts.length ? null : { ...pl, who: 'Lieu par défaut (personne n’a proposé)' };
+  const list = chosen ? [chosen] : pts;
+  return [
+    h('div', { class: 'section-label' }, 'Le lieu · aperçu admin (mode démo)'),
+    h('div', { class: 'rdv-place' },
+      ...list.map((p) => h('div', { style: { marginBottom: '8px' } },
+        h('div', { class: 'small' }, p.who),
+        h('div', { class: 'rdv-place-name', style: { fontSize: '19px' } }, p.name),
+        h('div', { class: 'small' }, `${p.address || 'adresse manquante'}${p.lat == null ? ' · ⚠ pas de coordonnées, pas de carte' : ''}`)))),
+    mapBlock(list.map((p) => ({ lat: p.lat, lng: p.lng, label: p.name })), { height: 260 })
+      || h('div', { class: 'map-locked' }, icon('pin'), h('span', {}, 'Aucune coordonnée : impossible d’afficher la carte')),
+    h('p', { class: 'small', style: { marginTop: '8px' } }, 'Visible seulement par les admins en mode démo. Les autres voient le lieu verrouillé jusqu’à la veille 20h.'),
   ];
 }
 

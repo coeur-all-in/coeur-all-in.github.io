@@ -42,6 +42,7 @@ function ctx() {
     refresh: () => refresh(true),
     nextMatch: (o) => nextMatch(o),
     goTab: (t) => goTab(t),
+    adminPreview: demoOn(),
   };
 }
 
@@ -365,6 +366,13 @@ function showSearch() {
     h('div', { class: 'body', style: { textAlign: 'center' } },
       h('p', {}, 'Je commence exigeant, puis j’élargis minute après minute. Au bout de 15 minutes, je te présente la première personne disponible.')),
     S.searchBox,
+    demoOn() && S.store.adminSkipSearch && h('section', { class: 'demo' },
+      h('div', { class: 'k' }, 'Mode démo (admin)'),
+      button('Recherche large maintenant', async () => {
+        await S.store.adminSkipSearch();
+        toast('Recherche ouverte à tout le monde.');
+        await trySearch();
+      }, 'btn quiet')),
     pushBanner(),
     h('div', { class: 'spacer' }),
     S.profile.paused ? status('Ton profil est en pause. Menu ☰ → Reprendre.', 'pause')
@@ -550,7 +558,9 @@ const chatOpen = () => {
   const d = S.data?.date;
   if (!d) return false;
   const a = d.answers || {};
-  return Object.values(a).filter((x) => x?.accept === true).length === 2 && clock.now() >= chatOpensAt(d);
+  const accepted = Object.values(a).filter((x) => x?.accept === true).length === 2;
+  // Mode démo (admin) : discussion ouverte tout de suite pour tester.
+  return accepted && (demoOn() || clock.now() >= chatOpensAt(d));
 };
 const chatSeenKey = () => `chatSeen.${S.data?.date?.id}`;
 
@@ -614,7 +624,7 @@ async function showThread() {
   const opens = chatOpensAt(d.date);
   root.replaceChildren(threadView({
     name: d.partner.firstName,
-    sub: `Votre date · ${weekday(d.date.dateAt)} 20h`,
+    sub: demoOn() && clock.now() < chatOpensAt(d.date) ? 'Aperçu admin · ouverte avant l’heure (mode démo)' : `Votre date · ${weekday(d.date.dateAt)} 20h`,
     messages, uid: S.uid,
     onBack: () => showChat(),
     onSend: open ? async (body) => {
