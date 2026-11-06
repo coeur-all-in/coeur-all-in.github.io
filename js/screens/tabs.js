@@ -1,10 +1,10 @@
 // Onglets « Rendez-vous » (carte, horaires, infos) et « Discussion ».
-import { forms, recognitionLines } from '../content.js';
+import { forms } from '../content.js';
 import { partnerOf, resolvePlace } from '../date-logic.js';
 import { mapBlock } from '../geo.js';
 import { at, clock, moments, unlocked } from '../timeline.js';
 import { button, countdown, dayLabel, h, hourLabel, icon, relDay, weekday } from '../ui.js';
-import { placeDuel } from './cards.js';
+import { arriveBox, placeDuel } from './cards.js';
 
 const both = (c, k) => c.date.answers?.[c.uid]?.[k] === true && c.date.answers?.[partnerOf(c.date, c.uid)]?.[k] === true;
 
@@ -51,26 +51,33 @@ export function rdvView(c) {
         accepted && h('span', { class: 'small' }, countdown(veille - now))),
     ];
 
-  const recog = placeKnown ? recognitionLines(partner) : [];
+  const lookout = placeKnown ? date.answers?.[partnerOf(date, c.uid)]?.lookout : null;
+  const g = c.games || [];
   const plan = [
     ['regles', 'Les règles'], ['objectif', 'Ton objectif secret'], ['discussion', 'La discussion s’ouvre'],
-    ['rdv', 'Rendez-vous'], ['jeu1', 'Premier jeu'], ['jeu2', 'Deuxième jeu'], ['jeu3', 'Troisième jeu · on peut parler boulot'],
-    ['jeu4', 'Quatrième jeu'], ['pari', 'Les paris'], ['reveal', 'On révèle'],
-  ].map(([k, label]) => {
+    ['rdv', 'Rendez-vous · appuie sur « Je suis arrivé·e »'],
+    ['jeu1', `Premier jeu · ${g[0]?.title || ''}`], ['jeu2', `Deuxième jeu · ${g[1]?.title || ''}`],
+    ['jeu3', `Troisième jeu · ${g[2]?.title || ''} · on peut parler boulot`],
+    ['jeu4', `Quatrième jeu · ${g[3]?.title || ''}`], ['pari', 'Les paris'], ['reveal', 'On révèle, puis le gagnant'],
+  ].filter(([k]) => k === 'rdv' || ms[k]).map(([k, label]) => {
     const t = k === 'rdv' ? date.dateAt : ms[k]?.at;
     const done = t <= now;
     return h('li', { class: done ? 'done' : '' },
-      h('span', { class: 'n' }, done ? '✓' : hourLabel(t).replace('h', 'h')), h('span', {}, label));
+      h('span', { class: 'n' }, done ? '✓' : hourLabel(t)), h('span', {}, label));
   });
+  const arrived = date.answers?.[c.uid]?.arrived != null && date.answers?.[partnerOf(date, c.uid)]?.arrived != null;
 
   return [
     h('div', { class: 'eyebrow' }, `Avec ${partner?.firstName || '…'}`),
     h('h1', { class: 'title' }, `${weekday(date.dateAt, true)}, 20h`),
     h('div', { class: 'meta' }, `${dayLabel(date.dateAt)} · ${date.dateAt > now ? countdown(date.dateAt - now) : 'c’est le jour J'}`),
+    arriveBox(c),
     ...lieu,
-    recog.length > 0 && [h('div', { class: 'section-label' }, `Pour ${P.le} reconnaître`), h('div', { class: 'body' }, h('p', { style: { fontSize: '16px' } }, recog.join(' · ')))],
+    placeKnown && [h('div', { class: 'section-label' }, `Pour ${P.le} reconnaître`),
+      lookout ? h('blockquote', { class: 'quote small-quote' }, `« ${lookout} »`) : h('p', { class: 'small' }, `${P.Il} écrira un petit mot avant le rendez-vous.`)],
     h('div', { class: 'section-label' }, `La soirée · ${weekday(date.dateAt)}`),
     h('ol', { class: 'list plan' }, plan),
+    h('p', { class: 'small', style: { marginTop: '8px' } }, arrived ? 'Les heures des jeux partent de votre arrivée.' : 'Les jeux commencent 30 min après vos deux arrivées : ces heures s’ajustent quand vous appuyez sur « Je suis arrivé·e ».'),
   ];
 }
 
@@ -185,3 +192,51 @@ export function renderMessages(list, messages, uid) {
   list.replaceChildren(...nodes);
 }
 
+
+// Glisser vers la droite pour quitter une conversation (comme sur iPhone).
+// `el` suit le doigt ; `under` (l'écran en dessous) glisse légèrement en parallaxe.
+export function enableSwipeBack(el, { under, onBack }) {
+  let x0 = 0; let y0 = 0; let dx = 0; let t0 = 0; let lock = null; let on = false;
+  const W = () => el.getBoundingClientRect().width || window.innerWidth;
+  const paint = (x, anim) => {
+    const tr = anim ? 'transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1)' : 'none';
+    el.style.transition = tr;
+    el.style.transform = x ? `translate3d(${x}px, 0, 0)` : '';
+    if (under) {
+      under.style.transition = tr;
+      under.style.transform = x ? `translate3d(${-60 + (60 * x) / W()}px, 0, 0)` : '';
+    }
+  };
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length > 1) { on = false; return; }
+    const t = e.touches[0];
+    x0 = t.clientX; y0 = t.clientY; dx = 0; lock = null; on = true; t0 = performance.now();
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (!on) return;
+    const t = e.touches[0];
+    const mx = t.clientX - x0;
+    const my = t.clientY - y0;
+    if (!lock) {
+      if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
+      lock = mx > 0 && Math.abs(mx) > Math.abs(my) * 1.3 ? 'x' : 'y';
+      if (lock === 'x') { el.classList.add('swiping'); if (under) under.style.transform = 'translate3d(-60px, 0, 0)'; }
+    }
+    if (lock !== 'x') return;
+    dx = Math.max(0, mx);
+    paint(dx, false);
+  }, { passive: true });
+  const end = () => {
+    if (!on) return;
+    on = false;
+    if (lock !== 'x') return;
+    el.classList.remove('swiping');
+    const v = dx / Math.max(1, performance.now() - t0);
+    if (dx > W() * 0.33 || (v > 0.45 && dx > 40)) {
+      paint(W(), true);
+      setTimeout(() => { if (under) { under.style.transition = ''; under.style.transform = ''; } onBack(); }, 260);
+    } else paint(0, true);
+  };
+  el.addEventListener('touchend', end);
+  el.addEventListener('touchcancel', end);
+}

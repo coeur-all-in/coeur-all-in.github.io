@@ -2,6 +2,7 @@
 import { BOTS } from './bots.js';
 import { bestMatch, compatible, score } from '../matching.js';
 import { clock, moments, nextDateSlot } from '../timeline.js';
+import { gamesFor } from '../date-logic.js';
 import { pickObjectives } from '../date-logic.js';
 
 const KEY = 'cai.local.v1';
@@ -33,22 +34,39 @@ export function createLocalStore() {
     const bot = botFor(date.b);
     if (!bot) return date;
     const now = clock.now();
-    const t = Object.fromEntries(moments(date, date.a).map((m) => [m.key, m.at]));
     const isParis = /paris/i.test(s.profile?.city || '');
     const sc = score(s.profile || {}, bot);
+    // La personne simulée arrive 3 minutes avant l'heure.
+    const arrivedAt = date.dateAt - 3 * MIN;
+    const withArrival = { ...date, answers: { ...date.answers, [date.b]: arrivedAt <= now ? { arrived: arrivedAt } : {} } };
+    const t = Object.fromEntries(moments(withArrival, date.a).map((m) => [m.key, m.at]));
+    const games = gamesFor(date, s.profile, bot);
+    const about = {
+      likes: bot.interests?.[0] ? `${bot.interests[0]}, sans hésiter` : 'Les longues marches',
+      said: bot.portrait?.people || 'Qu’on ne s’ennuie jamais avec moi',
+      hates: bot.portrait?.unforgivable || 'Les gens pressés',
+      free: bot.script.phrase,
+    };
+    const result = (g, i) => (g.type === 'count' ? { n: Math.min(g.max || 3, (sc + i) % ((g.max || 3) + 1)) } : { ok: (sc + i) % 2 === 0 });
     const plan = [
       ['accept', date.createdAt + 4000, true],
       ['confirm', date.createdAt + 8000, true],
       ['place', t.tonTour + 2 * MIN, isParis ? bot.script.place : { leave: true }],
-      ['phrase', t.tonTour + 2 * MIN, bot.script.phrase],
+      ['about', t.tonTour + 2 * MIN, about],
       ['bet', t.lieu + 5 * MIN, bot.script.bet],
+      ['lookout', t.lieu + 6 * MIN, bot.distinctive || 'Une veste en jean, près de l’entrée.'],
       ['rules', t.regles + MIN, true],
-      ['done', date.dateAt + bot.script.doneMin * MIN, date.dateAt + bot.script.doneMin * MIN],
+      ['objectiveSeen', t.objectif + MIN, true],
+      ['arrived', arrivedAt, arrivedAt],
+      ...games.map((g, i) => [`g${g.slot}`, t[`jeu${g.slot}`] + 12 * MIN, result(g, i)]),
+      ['done', t.jeu1 + bot.script.doneMin * MIN, t.jeu1 + bot.script.doneMin * MIN],
       ['betVerdict', t.pari + 2 * MIN, sc % 2 === 0],
+      ['guessed', t.reveal + 2 * MIN, false],
       ['again', t.apres + MIN, bot.script.again && sc >= 45],
+      ['note', t.apres + MIN, bot.script.again && sc >= 45 ? undefined : 'Merci pour la soirée, vraiment. Je n’ai juste pas senti l’étincelle, mais j’ai adoré tes réponses aux jeux.'],
     ];
     const ans = {};
-    for (const [k, when, v] of plan) if (when <= now) ans[k] = v;
+    for (const [k, when, v] of plan) if (when != null && when <= now && v !== undefined) ans[k] = v;
     return { ...date, answers: { ...date.answers, [date.b]: ans } };
   }
 
@@ -58,7 +76,13 @@ export function createLocalStore() {
       if (!s.userId) { s.userId = 'me-' + uid(); s.dates = []; save(s); }
       return { userId: s.userId };
     },
-    async getProfile() { return s.profile || null; },
+    async getProfile() { return s.profile ? { ...s.profile, verified: !!s.verif?.ok, gender: s.verif?.sex || s.profile.gender || null } : null; },
+    // Vérification d'identité simulée (mode solo) : validée tout de suite.
+    async getVerification() { return s.verif?.ok ? { status: 'approved' } : { status: 'none' }; },
+    async submitVerification(doc, selfie, sex) { s.verif = { ok: true, sex: sex || 'homme' }; save(s); return { status: 'approved' }; },
+    async adminVerifications() { return []; },
+    async presence() {},
+    subscribe() {},
     async isAdmin() { return true; }, // en solo, tout est permis (tests)
     async adminListUsers() {
       return BOTS.map((b) => ({ id: b.id, name: b.firstName, email: 'profil fictif', city: s.profile?.city || b.city, busy: false }));
@@ -78,7 +102,8 @@ export function createLocalStore() {
     async saveProfile(p) { s.profile = { ...p, id: s.userId }; save(s); return s.profile; },
 
     async findMatch() {
-      const me = s.profile;
+      if (!s.verif?.ok) return { search: { verify: 'none' } };
+      const me = { ...s.profile, gender: s.verif.sex };
       const exclude = (s.dates || []).map((d) => d.b);
       const candidates = pool(me);
       let best = bestMatch(me, candidates, exclude);

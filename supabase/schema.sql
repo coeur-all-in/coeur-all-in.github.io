@@ -10,7 +10,7 @@ create extension if not exists pgcrypto;
 create table if not exists public.profiles (
   id uuid primary key references auth.users on delete cascade,
   data jsonb not null,                     -- profil complet (prénom, physique, caractère…)
-  gender text not null,
+  gender text,                             -- sexe inscrit sur la pièce d'identité (rempli à la vérification)
   seeking text[] not null,
   birthdate date not null,
   age_min int not null default 18,
@@ -55,12 +55,27 @@ create table if not exists public.reports (
   created_at timestamptz not null default now()
 );
 
+-- Le sexe vient de la vérification d'identité (plus demandé dans le questionnaire).
+alter table public.profiles alter column gender drop not null;
+alter table public.profiles add column if not exists verified boolean not null default false;
+-- Présence : tant que l'appli est ouverte, pas de notification push (bannière dans l'appli à la place).
+alter table public.profiles add column if not exists in_app_until timestamptz;
+
 -- Recherche progressive : depuis quand la personne attend, et dernière ouverture de l'appli.
 alter table public.profiles add column if not exists searching_since timestamptz default now();
 alter table public.profiles add column if not exists last_seen timestamptz default now();
 create index if not exists profiles_searching_idx on public.profiles(searching_since) where searching_since is not null;
 
 -- ---------------------------------------------------------------- Helpers
+
+-- Admins (mode démo, vérifications d'identité). Défini tôt : des règles plus bas s'en servent.
+create table if not exists public.admins (
+  user_id uuid primary key references auth.users on delete cascade
+);
+create or replace function public.is_admin() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from admins where user_id = auth.uid())
+$$;
 
 -- Nombre d'éléments communs entre deux tableaux JSON de textes.
 create or replace function public.jcommon(x jsonb, y jsonb) returns int
@@ -220,7 +235,7 @@ declare
   paris_today date := (now() at time zone 'Europe/Paris')::date;
 begin
   select * into me from profiles where id = uid for update skip locked;
-  if me.id is null or not me.active or me.searching_since is null or public.is_busy(uid) then return null; end if;
+  if me.id is null or not me.active or not me.verified or me.gender is null or me.searching_since is null or public.is_busy(uid) then return null; end if;
   ml := public.search_level(me.searching_since);
 
   select p.id, p.availability, x.sc into cand
@@ -232,7 +247,7 @@ begin
            extract(year from age(p.birthdate))::int as page,
            extract(year from age(me.birthdate))::int as mage
   ) x
-  where p.id <> me.id and p.active
+  where p.id <> me.id and p.active and p.verified
     and p.searching_since is not null
     and p.last_seen > now() - interval '14 days'
     and p.gender = any(me.seeking) and me.gender = any(p.seeking)
@@ -290,6 +305,7 @@ begin
   order by d.created_at desc limit 1;
   if existing is not null then return jsonb_build_object('date_id', existing); end if;
 
+  if not me.verified then return jsonb_build_object('date_id', null, 'verify', true); end if;
   update profiles set last_seen = now(), searching_since = coalesce(searching_since, now()) where id = me.id;
   if not me.active then return jsonb_build_object('date_id', null, 'paused', true); end if;
 
@@ -304,7 +320,7 @@ begin
     'km', case when l >= 4 then null else round(me.max_km * public.lvl_km(l)) end,
     'age_pad', public.lvl_age(l),
     'min_score', public.lvl_score(l),
-    'waiting', (select count(*) from profiles p where p.active and p.searching_since is not null and p.id <> me.id
+    'waiting', (select count(*) from profiles p where p.active and p.verified and p.searching_since is not null and p.id <> me.id
                 and p.last_seen > now() - interval '14 days' and p.gender = any(me.seeking) and me.gender = any(p.seeking))
   );
 end $$;
@@ -370,6 +386,13 @@ drop policy if exists "profil: modifier le sien" on public.profiles;
 create policy "profil: modifier le sien" on public.profiles for update using (id = auth.uid()) with check (id = auth.uid());
 drop policy if exists "profil: supprimer le sien" on public.profiles;
 create policy "profil: supprimer le sien" on public.profiles for delete using (id = auth.uid());
+
+-- Le sexe, la vérification et la présence ne s'écrivent jamais depuis l'appli (seulement par le serveur).
+revoke insert, update on public.profiles from anon, authenticated;
+grant insert (id, data, seeking, birthdate, age_min, age_max, city, lat, lng, max_km, availability, active, updated_at)
+  on public.profiles to authenticated;
+grant update (id, data, seeking, birthdate, age_min, age_max, city, lat, lng, max_km, availability, active, updated_at)
+  on public.profiles to authenticated;
 
 drop policy if exists "date: participants" on public.dates;
 create policy "date: participants" on public.dates for select using (auth.uid() in (a, b));
@@ -437,6 +460,7 @@ create policy "messages: écrire à partir d'1 h avant" on public.messages for i
        or public.is_admin())
   and (select count(*) from answers x where x.date_id = messages.date_id and x.key = 'accept' and x.value = 'true'::jsonb) = 2
   and not exists (select 1 from dates d where d.id = messages.date_id and auth.uid() = any(d.closed_by))
+  and not exists (select 1 from answers x where x.date_id = messages.date_id and x.key = 'ended')
 );
 
 -- ================================================================ Notifications push
@@ -501,16 +525,39 @@ create table if not exists public.push_queue (
 alter table public.push_queue enable row level security;
 revoke all on public.push_queue from anon, authenticated;
 
--- Messages dus maintenant. Les note comme envoyés et renvoie, pour chaque personne, le plus récent
--- (si plusieurs cartes se sont débloquées d'un coup, un seul message). Ignore ce qui a plus de 3 h.
--- Les heures suivent js/timeline.js, en heure de Paris.
-create or replace function public.due_card_pushes() returns table (user_id uuid, date_id uuid, key text, body text)
-language plpgsql security definer set search_path = public as $$
+-- Horodatage en millisecondes (réponse JSON) → timestamptz.
+create or replace function public.ms_ts(v jsonb) returns timestamptz
+language sql immutable as $$
+  select case when v is not null and jsonb_typeof(v) = 'number' then to_timestamp((v::text)::numeric / 1000) end
+$$;
+
+-- La personne a l'appli ouverte (signal envoyé toutes les 10 s par l'appli) ?
+create or replace function public.is_present(uid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select in_app_until > now() from profiles where id = uid), false)
+$$;
+
+create or replace function public.set_presence(p_where text) returns void
+language sql security definer set search_path = public as $$
+  update profiles set in_app_until = case when p_where = 'away' then null else now() + interval '30 seconds' end,
+                      last_seen = now()
+  where id = auth.uid()
+$$;
+revoke all on function public.set_presence(text) from public, anon;
+grant execute on function public.set_presence(text) to authenticated;
+
+-- Tout ce qui est dû et pas encore envoyé (cartes, arrivées, fin du date, messages).
+-- Les heures suivent js/timeline.js, en heure de Paris. Les jeux partent de l'arrivée des deux
+-- (bouton « Je suis arrivé·e ») + 30 min ; sans arrivée des deux à 20h45, on démarre à 20h45.
+drop function if exists public.pending_pushes();
+create or replace function public.pending_pushes()
+returns table (user_id uuid, date_id uuid, key text, at timestamptz, body text, vnow timestamptz)
+language plpgsql stable security definer set search_path = public as $$
 begin
   return query
   with d as (
-    select dt.id, dt.a, dt.b, dt.created_at, dt.closed_by, (dt.date_at at time zone 'Europe/Paris')::date as dday,
-           now() + coalesce(dt.demo_offset_ms, 0) * interval '1 millisecond' as vnow
+    select dt.id, dt.a, dt.b, dt.created_at, dt.closed_by, dt.date_at, (dt.date_at at time zone 'Europe/Paris')::date as dday,
+           now() + coalesce(dt.demo_offset_ms, 0) * interval '1 millisecond' as vn
     from dates dt
     where dt.date_at > now() - interval '2 days'
   ),
@@ -524,30 +571,49 @@ begin
       (select count(*) = 2 from answers x where x.date_id = p.id and x.key = 'accept' and x.value = 'true'::jsonb) as both_ok,
       (select max(x.updated_at) from answers x where x.date_id = p.id and x.key = 'accept') as ok_at,
       (select count(*) = 2 from answers x where x.date_id = p.id and x.key = 'again') as both_again,
-      (select max(x.updated_at) from answers x where x.date_id = p.id and x.key = 'again') as again_at
+      (select max(x.updated_at) from answers x where x.date_id = p.id and x.key = 'again') as again_at,
+      (select count(*) = 2 from answers x where x.date_id = p.id and x.key = 'guessed') as both_guessed,
+      (select max(x.updated_at) from answers x where x.date_id = p.id and x.key = 'guessed') as guessed_at,
+      public.ms_ts((select x.value from answers x where x.date_id = p.id and x.user_id = p.uid and x.key = 'arrived')) as my_arr,
+      public.ms_ts((select x.value from answers x where x.date_id = p.id and x.user_id = p.other and x.key = 'arrived')) as their_arr,
+      (select public.ms_ts(x.value->'at') from answers x where x.date_id = p.id and x.key = 'ended' order by x.updated_at limit 1) as ended_at,
+      (select x.user_id from answers x where x.date_id = p.id and x.key = 'ended' order by x.updated_at limit 1) as ended_by,
+      coalesce((select pr.data->>'firstName' from profiles pr where pr.id = p.other), 'Ton date') as oname
     from p
   ),
+  t as (
+    select s.*,
+      case when s.my_arr is not null and s.their_arr is not null
+           then least(greatest(s.my_arr, s.their_arr), s.date_at + interval '45 minutes')
+           else s.date_at + interval '45 minutes' end as st
+    from s
+  ),
   m as (
-    select s.id as m_date, s.uid as m_user, k.key as m_key, k.at as m_at, k.body as m_body, s.vnow as m_now
-    from s cross join lateral (values
-      ('invite',   s.created_at, 'Quelqu’un a pensé à toi. Ouvre vite.', true),
-      ('cadrage',  greatest(s.created_at, s.ok_at), 'C’est calé : vous avez dit oui tous les deux.', s.both_ok),
-      ('tonTour',  greatest(s.created_at, ((s.dday - 3) + time '10:00') at time zone 'Europe/Paris'), 'À ton tour. Réponse attendue avant demain midi.', s.both_ok),
-      ('phrase',   greatest(s.created_at + interval '2 hours', ((s.dday - 2) + time '12:00') at time zone 'Europe/Paris'), 'Ce qu’on a écrit pour toi est arrivé.', s.both_ok),
-      ('lieu',     ((s.dday - 1) + time '20:00') at time zone 'Europe/Paris', 'Le lieu est fixé. Et ton pari t’attend.', s.both_ok),
-      ('regles',   (s.dday + time '10:00') at time zone 'Europe/Paris', 'Les règles, avant ce soir.', s.both_ok),
-      ('objectif', (s.dday + time '14:00') at time zone 'Europe/Paris', 'Ton objectif secret. Personne d’autre ne le sait.', s.both_ok),
-      ('chat',     (s.dday + time '19:00') at time zone 'Europe/Paris', 'La discussion est ouverte. Vous vous voyez dans une heure.', s.both_ok),
-      ('jeu1',     (s.dday + time '20:30') at time zone 'Europe/Paris', 'Premier jeu.', s.both_ok),
-      ('jeu2',     (s.dday + time '21:00') at time zone 'Europe/Paris', 'Deuxième jeu.', s.both_ok),
-      ('jeu3',     (s.dday + time '21:30') at time zone 'Europe/Paris', 'Troisième jeu. Et vous pouvez parler boulot.', s.both_ok),
-      ('jeu4',     (s.dday + time '22:00') at time zone 'Europe/Paris', 'Quatrième jeu.', s.both_ok),
-      ('pari',     (s.dday + time '22:15') at time zone 'Europe/Paris', 'On rouvre les paris.', s.both_ok),
-      ('reveal',   (s.dday + time '22:40') at time zone 'Europe/Paris', 'On révèle les objectifs.', s.both_ok),
-      ('apres',    ((s.dday + 1) + time '11:00') at time zone 'Europe/Paris', 'Et maintenant ? Une dernière question.', s.both_ok),
-      ('verdict',  greatest(((s.dday + 1) + time '11:00') at time zone 'Europe/Paris', s.again_at), 'Vous avez répondu tous les deux.', s.both_again)
+    select t.id as m_date, t.uid as m_user, k.key as m_key, k.at as m_at, k.body as m_body, t.vn as m_now
+    from t cross join lateral (values
+      ('invite',   t.created_at, 'Quelqu’un a pensé à toi. Ouvre vite.', true),
+      ('cadrage',  greatest(t.created_at, t.ok_at), 'C’est calé : vous avez dit oui tous les deux.', t.both_ok),
+      ('tonTour',  greatest(t.created_at, ((t.dday - 3) + time '10:00') at time zone 'Europe/Paris'), 'À ton tour. Réponse attendue avant demain midi.', t.both_ok),
+      ('phrase',   greatest(t.created_at + interval '2 hours', ((t.dday - 2) + time '12:00') at time zone 'Europe/Paris'), 'Ce qu’on a écrit pour toi est arrivé.', t.both_ok),
+      ('lieu',     ((t.dday - 1) + time '20:00') at time zone 'Europe/Paris', 'Le lieu est fixé. Ton pari et ton petit mot t’attendent.', t.both_ok),
+      ('regles',   (t.dday + time '10:00') at time zone 'Europe/Paris', 'Les règles, avant ce soir.', t.both_ok),
+      ('objectif', (t.dday + time '14:00') at time zone 'Europe/Paris', 'Ton objectif secret. Personne d’autre ne le sait.', t.both_ok),
+      ('chat',     t.date_at - interval '1 hour', 'La discussion est ouverte. Vous vous voyez dans une heure.', t.both_ok),
+      ('arrive',   t.their_arr, t.oname || ' est arrivé·e. Appuie sur « Je suis arrivé·e » dès que tu y es.', t.both_ok and t.their_arr is not null and t.my_arr is null),
+      ('start',    greatest(t.my_arr, t.their_arr), 'Vous êtes là tous les deux : le date commence. Premier jeu dans 30 min.', t.both_ok and t.my_arr is not null and t.their_arr is not null),
+      ('jeu1',     t.st + interval '30 minutes', 'Premier jeu.', t.both_ok),
+      ('jeu2',     t.st + interval '60 minutes', 'Deuxième jeu.', t.both_ok),
+      ('jeu3',     t.st + interval '90 minutes', 'Troisième jeu. Et vous pouvez parler boulot.', t.both_ok),
+      ('jeu4',     t.st + interval '120 minutes', 'Quatrième jeu.', t.both_ok),
+      ('pari',     t.st + interval '135 minutes', 'On rouvre les paris.', t.both_ok),
+      ('reveal',   t.st + interval '160 minutes', 'On révèle les objectifs.', t.both_ok),
+      ('score',    greatest(t.st + interval '160 minutes', t.guessed_at), 'Les points sont comptés : qui a gagné ?', t.both_ok and t.both_guessed),
+      ('fin',      t.ended_at, t.oname || ' a mis fin au date.', t.ended_by = t.other),
+      ('apres',    ((t.dday + 1) + time '11:00') at time zone 'Europe/Paris', 'Et maintenant ? Une dernière question.', t.both_ok),
+      ('verdict',  greatest(((t.dday + 1) + time '11:00') at time zone 'Europe/Paris', t.again_at), 'Vous avez répondu tous les deux.', t.both_again)
     ) as k(key, at, body, ready)
-    where k.ready and k.at <= s.vnow
+    where k.ready and k.at is not null and k.at <= t.vn
+      and (t.ended_at is null or k.key = 'fin' or k.at <= t.ended_at)
     union all
     -- Nouveaux messages de la discussion (pour la personne qui les reçoit).
     select mm.date_id, case when mm.user_id = dt.a then dt.b else dt.a end, 'msg:' || mm.id, mm.created_at,
@@ -557,17 +623,31 @@ begin
     left join profiles pr on pr.id = mm.user_id
     where mm.created_at > now() - interval '15 minutes'
       and not ((case when mm.user_id = dt.a then dt.b else dt.a end) = any(dt.closed_by))
-  ),
+  )
+  select m.m_user, m.m_date, m.m_key, m.m_at, m.m_body, m.m_now from m
+  where not exists (select 1 from push_log l where l.date_id = m.m_date and l.user_id = m.m_user and l.key = m.m_key);
+end $$;
+revoke all on function public.pending_pushes() from public, anon, authenticated;
+
+-- Messages dus maintenant : les note comme envoyés et renvoie, pour chaque personne, le plus récent
+-- (si plusieurs cartes se sont débloquées d'un coup, un seul message). Ignore ce qui a plus de 3 h,
+-- et ce qui concerne quelqu'un qui a l'appli ouverte (il le voit déjà, en bannière).
+create or replace function public.due_card_pushes() returns table (user_id uuid, date_id uuid, key text, body text)
+language plpgsql security definer set search_path = public as $$
+begin
+  return query
+  with c as (select * from public.pending_pushes()),
   ins as (
     insert into push_log (date_id, user_id, key)
-    select m.m_date, m.m_user, m.m_key from m
+    select c.date_id, c.user_id, c.key from c
     on conflict do nothing
     returning push_log.date_id, push_log.user_id, push_log.key
   )
-  select distinct on (m.m_user) m.m_user, m.m_date, m.m_key, m.m_body
-  from ins join m on m.m_date = ins.date_id and m.m_user = ins.user_id and m.m_key = ins.key
-  where m.m_at > m.m_now - interval '3 hours'
-  order by m.m_user, m.m_at desc;
+  select distinct on (c.user_id) c.user_id, c.date_id, c.key, c.body
+  from ins join c on c.date_id = ins.date_id and c.user_id = ins.user_id and c.key = ins.key
+  where c.at > c.vnow - interval '3 hours'
+    and not public.is_present(c.user_id)
+  order by c.user_id, c.at desc;
 end $$;
 revoke all on function public.due_card_pushes() from public, anon, authenticated;
 
@@ -585,7 +665,50 @@ begin
 end $$;
 revoke all on function public.due_pushes() from public, anon, authenticated;
 
--- Tâche planifiée : chaque minute, réveille la fonction push (pg_net + pg_cron).
+-- Réveille la fonction push tout de suite (appel HTTP asynchrone, envoyé après la transaction).
+create or replace function public.kick_push() returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform net.http_post(
+    url := (select function_url from public.push_config where id = 1),
+    headers := jsonb_build_object('Content-Type', 'application/json',
+                                  'x-cron-secret', (select cron_secret from public.push_config where id = 1)),
+    body := '{}'::jsonb);
+exception when others then null;  -- pg_net absent : la tâche planifiée prendra le relais
+end $$;
+revoke all on function public.kick_push() from public, anon, authenticated;
+
+-- Appelée toutes les 10 secondes : n'appelle la fonction push que s'il y a quelque chose à envoyer
+-- (une carte dont l'heure est passée, un message, une notification test).
+create or replace function public.kick_if_due() returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if exists (select 1 from public.pending_pushes())
+     or exists (select 1 from push_queue where sent_at is null and created_at > now() - interval '1 hour') then
+    perform public.kick_push();
+  end if;
+end $$;
+revoke all on function public.kick_if_due() from public, anon, authenticated;
+
+-- Notifications instantanées : un message, une arrivée, une fin de date, une avance du temps (démo)
+-- déclenchent l'envoi immédiatement, sans attendre la tâche planifiée.
+create or replace function public.trg_kick_push() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public.kick_push();
+  return null;
+end $$;
+drop trigger if exists messages_kick on public.messages;
+create trigger messages_kick after insert on public.messages for each row execute function public.trg_kick_push();
+drop trigger if exists answers_kick on public.answers;
+create trigger answers_kick after insert or update on public.answers for each row
+  when (new.key in ('accept', 'arrived', 'ended', 'again', 'guessed')) execute function public.trg_kick_push();
+drop trigger if exists dates_kick on public.dates;
+create trigger dates_kick after update of demo_offset_ms on public.dates for each row execute function public.trg_kick_push();
+drop trigger if exists queue_kick on public.push_queue;
+create trigger queue_kick after insert on public.push_queue for each row execute function public.trg_kick_push();
+
+-- Tâche planifiée : toutes les 10 secondes, vérifie s'il y a une carte à envoyer (pg_cron + pg_net).
 do $$
 begin
   create extension if not exists pg_net;
@@ -593,15 +716,29 @@ begin
   if exists (select 1 from cron.job where jobname = 'cai-push') then
     perform cron.unschedule('cai-push');
   end if;
-  perform cron.schedule('cai-push', '* * * * *', $job$
-    select net.http_post(
-      url := (select function_url from public.push_config where id = 1),
-      headers := jsonb_build_object('Content-Type', 'application/json',
-                                    'x-cron-secret', (select cron_secret from public.push_config where id = 1)),
-      body := '{}'::jsonb)
-  $job$);
+  begin
+    perform cron.schedule('cai-push', '10 seconds', 'select public.kick_if_due()');
+  exception when others then
+    -- pg_cron trop ancien pour les secondes : chaque minute.
+    perform cron.schedule('cai-push', '* * * * *', 'select public.kick_if_due()');
+  end;
 exception when others then
   raise notice 'pg_net / pg_cron indisponible (%). Active-les dans Database → Extensions puis relance ce script.', sqlerrm;
+end $$;
+
+-- Temps réel (Supabase Realtime) : messages, réponses et avance du temps arrivent instantanément dans l'appli.
+do $$
+declare t text;
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    foreach t in array array['messages', 'answers', 'dates'] loop
+      if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t) then
+        execute format('alter publication supabase_realtime add table public.%I', t);
+      end if;
+    end loop;
+  end if;
+exception when others then
+  raise notice 'Realtime indisponible (%). L’appli se mettra à jour toutes les quelques secondes.', sqlerrm;
 end $$;
 
 create table if not exists public.admins (
@@ -626,6 +763,7 @@ revoke all on function public.admin_skip_search() from public, anon;
 grant execute on function public.admin_skip_search() to authenticated;
 
 -- Admin (mode démo) : liste des comptes, pour choisir son match.
+drop function if exists public.admin_list_users();
 create or replace function public.admin_list_users() returns table (id uuid, first_name text, email text, city text, gender text, busy boolean)
 language sql stable security definer set search_path = public as $$
   select p.id, p.data->>'firstName', u.email::text, p.city, p.gender, public.is_busy(p.id)
@@ -738,3 +876,103 @@ begin
 end $$;
 revoke all on function public.admin_test_push() from public, anon;
 grant execute on function public.admin_test_push() to authenticated;
+
+-- ================================================================ Vérification d'identité
+-- Chaque personne envoie une photo de sa pièce d'identité + un selfie (stockage privé « id-docs »).
+-- Un admin compare, indique le sexe inscrit sur le document, valide ou refuse. Les photos sont alors supprimées.
+create table if not exists public.verifications (
+  user_id uuid primary key references auth.users on delete cascade,
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  sex text check (sex in ('homme', 'femme')),
+  doc_path text,
+  selfie_path text,
+  note text,
+  submitted_at timestamptz not null default now(),
+  decided_at timestamptz
+);
+alter table public.verifications enable row level security;
+revoke all on public.verifications from anon, authenticated;
+
+create or replace function public.my_verification() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(
+    (select jsonb_build_object('status', v.status, 'note', v.note) from verifications v where v.user_id = auth.uid()),
+    case when (select verified from profiles where id = auth.uid()) then jsonb_build_object('status', 'approved')
+         else jsonb_build_object('status', 'none') end)
+$$;
+revoke all on function public.my_verification() from public, anon;
+grant execute on function public.my_verification() to authenticated;
+
+create or replace function public.submit_verification(p_doc text, p_selfie text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then raise exception 'Connexion requise'; end if;
+  if split_part(p_doc, '/', 1) <> auth.uid()::text or split_part(p_selfie, '/', 1) <> auth.uid()::text then
+    raise exception 'Chemin invalide';
+  end if;
+  insert into verifications (user_id, status, doc_path, selfie_path, submitted_at, note, sex, decided_at)
+  values (auth.uid(), 'pending', p_doc, p_selfie, now(), null, null, null)
+  on conflict (user_id) do update set status = 'pending', doc_path = excluded.doc_path, selfie_path = excluded.selfie_path,
+    submitted_at = now(), note = null, sex = null, decided_at = null
+  where verifications.status <> 'approved';
+end $$;
+revoke all on function public.submit_verification(text, text) from public, anon;
+grant execute on function public.submit_verification(text, text) to authenticated;
+
+drop function if exists public.admin_verifications();
+create or replace function public.admin_verifications()
+returns table (user_id uuid, first_name text, birthdate date, email text, city text, doc_path text, selfie_path text, submitted_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select v.user_id, p.data->>'firstName', p.birthdate, u.email::text, p.city, v.doc_path, v.selfie_path, v.submitted_at
+  from verifications v
+  join auth.users u on u.id = v.user_id
+  left join profiles p on p.id = v.user_id
+  where public.is_admin() and v.status = 'pending'
+  order by v.submitted_at
+$$;
+revoke all on function public.admin_verifications() from public, anon;
+grant execute on function public.admin_verifications() to authenticated;
+
+-- Décision de l'admin. Renvoie les chemins des photos, que l'appli supprime aussitôt du stockage.
+create or replace function public.admin_decide_verification(p_user uuid, p_ok boolean, p_sex text, p_note text) returns text[]
+language plpgsql security definer set search_path = public as $$
+declare
+  paths text[];
+begin
+  if not public.is_admin() then raise exception 'Réservé aux admins'; end if;
+  if p_ok and p_sex not in ('homme', 'femme') then raise exception 'Sexe manquant'; end if;
+  select array[doc_path, selfie_path] into paths from verifications where user_id = p_user;
+  update verifications set status = case when p_ok then 'approved' else 'rejected' end,
+    sex = case when p_ok then p_sex end, note = p_note, decided_at = now(), doc_path = null, selfie_path = null
+  where user_id = p_user;
+  if p_ok then
+    update profiles set gender = p_sex, verified = true where id = p_user;
+    insert into push_queue (user_id, body) values (p_user, 'Ton identité est vérifiée ✓ Je commence à te chercher quelqu’un.');
+  else
+    update profiles set verified = false where id = p_user;
+    insert into push_queue (user_id, body) values (p_user, 'Ta vérification d’identité n’a pas pu être validée. Ouvre l’appli pour renvoyer tes photos.');
+  end if;
+  return coalesce(paths, '{}');
+end $$;
+revoke all on function public.admin_decide_verification(uuid, boolean, text, text) from public, anon;
+grant execute on function public.admin_decide_verification(uuid, boolean, text, text) to authenticated;
+
+-- Stockage privé des documents : chacun dépose dans son dossier ; seuls les admins peuvent les lire.
+do $$
+begin
+  insert into storage.buckets (id, name, public) values ('id-docs', 'id-docs', false) on conflict (id) do nothing;
+  drop policy if exists "id-docs: déposer les siens" on storage.objects;
+  create policy "id-docs: déposer les siens" on storage.objects for insert to authenticated
+    with check (bucket_id = 'id-docs' and (storage.foldername(name))[1] = auth.uid()::text);
+  drop policy if exists "id-docs: remplacer les siens" on storage.objects;
+  create policy "id-docs: remplacer les siens" on storage.objects for update to authenticated
+    using (bucket_id = 'id-docs' and (storage.foldername(name))[1] = auth.uid()::text);
+  drop policy if exists "id-docs: lire (soi ou admin)" on storage.objects;
+  create policy "id-docs: lire (soi ou admin)" on storage.objects for select to authenticated
+    using (bucket_id = 'id-docs' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin()));
+  drop policy if exists "id-docs: supprimer (soi ou admin)" on storage.objects;
+  create policy "id-docs: supprimer (soi ou admin)" on storage.objects for delete to authenticated
+    using (bucket_id = 'id-docs' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin()));
+exception when others then
+  raise notice 'Stockage indisponible (%). La vérification d’identité ne pourra pas recevoir de photos.', sqlerrm;
+end $$;

@@ -2,12 +2,13 @@
 import { CONFIG, IS_REMOTE } from './config.js';
 import { forms, portraitText } from './content.js';
 import { askPermission, disablePush, downloadCalendar, enablePush, isIosBrowser, notifOff, notifState, notifyNew, pushSupported, setBadge } from './notify.js';
-import { CARDS, TILE, markDone, needsAction } from './screens/cards.js';
+import { CARDS, TILE, arriveBox, endDateSheet, markDone, needsAction } from './screens/cards.js';
 import { onboarding } from './screens/onboarding.js';
-import { chatListView, chatOpensAt, rdvView, renderMessages, threadView } from './screens/tabs.js';
+import { chatListView, chatOpensAt, enableSwipeBack, rdvView, renderMessages, threadView } from './screens/tabs.js';
 import { createStore } from './store/index.js';
-import { clock, isDuringDate, nextJump, nextMoment, unlocked } from './timeline.js';
-import { button, card, confirmSheet, countdown, dayLabel, h, hourLabel, icon, relDay, sheet, shortDay, status, toast, weekday } from './ui.js';
+import { gamesFor, scoreBoard } from './date-logic.js';
+import { clock, endedOf, isDuringDate, nextJump, nextMoment, startOf, unlocked } from './timeline.js';
+import { banner, button, card, confirmSheet, countdown, dayLabel, h, hourLabel, icon, relDay, sheet, shortDay, status, toast, weekday } from './ui.js';
 
 const root = document.getElementById('app');
 const S = {
@@ -42,24 +43,43 @@ function ctx() {
     refresh: () => refresh(true),
     nextMatch: (o) => nextMatch(o),
     goTab: (t) => goTab(t),
+    openCard: (k) => showCard(k),
+    games: gamesFor(date, S.profile, partner),
     adminPreview: demoOn(),
   };
 }
 
 // ---------- Démarrage ----------
-// Clavier mobile : l'appli prend exactement la hauteur visible, la barre d'écriture reste collée au clavier.
+// Clavier mobile : pendant la saisie, l'appli prend exactement la hauteur visible (la barre d'écriture
+// reste collée au clavier). Le reste du temps, elle occupe tout l'écran (pas de mesure fragile :
+// c'était la cause des écrans noirs ou coupés au retour dans l'appli).
 function fitViewport() {
   const vv = window.visualViewport;
-  if (!vv) return;
+  const rs = document.documentElement.style;
+  const typing = () => document.activeElement?.matches?.('input:not([type=checkbox]):not([type=range]):not([type=file]), textarea');
   const apply = () => {
-    const rootStyle = document.documentElement.style;
-    rootStyle.setProperty('--app-h', `${Math.round(vv.height)}px`);
-    rootStyle.setProperty('--app-top', `${Math.round(vv.offsetTop)}px`);
+    if (!vv || !typing()) {
+      rs.removeProperty('--app-h');
+      rs.removeProperty('--app-top');
+      if (window.scrollY) window.scrollTo(0, 0); // iOS laisse parfois la page décalée après le clavier
+      return;
+    }
+    const ht = Math.round(vv.height);
+    if (ht < 180) return; // mesure aberrante (retour d'arrière-plan) : on ignore
+    rs.setProperty('--app-h', `${ht}px`);
+    rs.setProperty('--app-top', `${Math.max(0, Math.round(vv.offsetTop))}px`);
     const list = document.querySelector('.thread-list');
     if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 160) list.scrollTop = list.scrollHeight;
   };
-  vv.addEventListener('resize', apply);
-  vv.addEventListener('scroll', apply);
+  const later = () => { apply(); setTimeout(apply, 120); setTimeout(apply, 450); };
+  vv?.addEventListener('resize', apply);
+  vv?.addEventListener('scroll', apply);
+  window.addEventListener('resize', apply);
+  window.addEventListener('orientationchange', later);
+  window.addEventListener('pageshow', later);
+  document.addEventListener('focusin', later);
+  document.addEventListener('focusout', later);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) later(); });
   apply();
 }
 
@@ -68,16 +88,18 @@ async function boot() {
   setInterval(tick, 1000);
   // Comme une vraie appli : pas de zoom (pincement, double-tap) sur la page.
   for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+  // Double-tap (zoom) bloqué seulement sur le texte : jamais sur les boutons, pour ne perdre aucun toucher.
   let lastTouch = 0;
   document.addEventListener('touchend', (e) => {
     const now = Date.now();
-    if (now - lastTouch < 320 && !e.target.closest('.map, input, textarea')) e.preventDefault();
+    if (now - lastTouch < 300 && e.cancelable && !e.target.closest('button, a, input, textarea, select, label, .map, .chip, .tile, .conv')) e.preventDefault();
     lastTouch = now;
   }, { passive: false });
   // Retour sur l'appli après l'avoir quittée plus de 10 s : on revient sur l'Accueil (sauf en pleine saisie).
   let hiddenAt = 0;
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (document.hidden) { hiddenAt = Date.now(); S.store?.presence?.('away'); return; }
+    beat(true);
     const away = hiddenAt && Date.now() - hiddenAt > 10000;
     hiddenAt = 0;
     const typing = document.querySelector('.sheet-wrap, .duel') || ['onboarding', 'auth', 'splash', 'boot', 'thread', 'notif-gate'].includes(S.view);
@@ -160,18 +182,77 @@ function signature() {
 
 function sync() {
   const list = unlocked(S.data.date, S.uid);
-  notifyNew(S.data.date.id, list, { silentFirst: true });
+  // Nouvelle carte pendant que l'appli est ouverte : bannière interne (le serveur ne notifie pas).
+  notifyNew(S.data.date.id, list, { silentFirst: true, system: !IS_REMOTE, onFresh: cardBanner });
   const s = seen();
   setBadge(list.filter((m) => !s.has(m.key)).length);
   S.sig = signature();
+  live(S.data.date.id);
+}
+
+function cardBanner(m) {
+  if (S.view === 'card' && S.cardKey === m.key) return;
+  const name = S.data?.partner?.firstName || 'Ton date';
+  const t = CARDS[m.key] && TILE[m.key] ? TILE[m.key](ctx()) : null;
+  const special = {
+    arrive: [`${name} est arrivé·e`, 'Appuie sur « Je suis arrivé·e » dès que tu y es.'],
+    start: ['Le date commence', 'Vous êtes là tous les deux. Premier jeu dans 30 min.'],
+    fin: [`${name} a mis fin au date`, 'Ouvre pour lire son mot.'],
+  }[m.key];
+  banner({
+    title: special ? special[0] : t ? t.t : 'Cœur All In',
+    body: special ? special[1] : t ? t.e : m.notif,
+    initial: ['arrive', 'fin'].includes(m.key) ? name : '♥',
+    onTap: () => (CARDS[m.key] ? showCard(m.key) : showFeed()),
+  });
+}
+
+// ---------- Temps réel ----------
+// Messages, réponses de l'autre et avance du temps arrivent instantanément (Supabase Realtime).
+let liveId = null;
+let liveTimer = null;
+function live(dateId) {
+  if (!S.store?.subscribe || liveId === dateId) return;
+  liveId = dateId;
+  S.store.subscribe(dateId, onLive);
+}
+
+function onLive(ev) {
+  if (ev.table === 'messages') {
+    const r = ev.row;
+    if (!r || r.user_id === S.uid) return;
+    if (S.view === 'thread') { pollChat(true); return; }
+    const msg = { id: r.id, from: r.user_id, body: r.body, at: Date.parse(r.created_at) };
+    if (!(S.messages || []).some((m) => m.id === msg.id)) S.messages = [...(S.messages || []), msg];
+    updateChatBadge();
+    if (S.view === 'chat') renderChatList({ still: true });
+    if (!document.hidden) {
+      const name = S.data?.partner?.firstName || 'Nouveau message';
+      banner({ title: name, body: r.body, initial: name, onTap: () => goTab('thread') });
+    }
+    return;
+  }
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => refresh(), 120);
+}
+
+// Présence : tant que l'appli est ouverte, le serveur n'envoie pas de notification push
+// (bannière interne à la place, rien du tout dans la conversation ouverte).
+let lastBeat = 0;
+function beat(force) {
+  if (!S.store?.presence || !S.uid || document.hidden) return;
+  if (!force && Date.now() - lastBeat < 10000) return;
+  lastBeat = Date.now();
+  S.store.presence(S.view === 'thread' ? 'thread' : 'app');
 }
 
 let lastPoll = 0;
 let lastChatPoll = 0;
 async function tick() {
+  beat();
   if (S.view === 'feed') updateCountdown();
   document.querySelectorAll('[data-countdown]').forEach((el) => { el.textContent = countdown(Number(el.dataset.countdown) - clock.now()); });
-  if (S.view === 'thread' && Date.now() - lastChatPoll > (IS_REMOTE ? 3000 : 1500) && !document.hidden) { lastChatPoll = Date.now(); pollChat(); }
+  if (S.view === 'thread' && Date.now() - lastChatPoll > (IS_REMOTE ? 5000 : 1500) && !document.hidden) { lastChatPoll = Date.now(); pollChat(); }
   const every = IS_REMOTE ? (S.view === 'search' ? 8000 : 15000) : 2000;
   if (Date.now() - lastPoll < every || document.hidden) return;
   lastPoll = Date.now();
@@ -183,7 +264,7 @@ async function refresh(force = false) {
   if (!S.store || !S.profile) return;
   try {
     const data = await S.store.getDate();
-    if (!data) { if (['feed', 'card'].includes(S.view)) showSearch(); S.data = null; return; }
+    if (!data) { if (['feed', 'card', 'rdv'].includes(S.view)) showSearch(); S.data = null; live(null); return; }
     S.data = data;
     syncClock();
     const before = S.sig;
@@ -193,10 +274,13 @@ async function refresh(force = false) {
       if (S.view === 'card') showCard(S.cardKey, { keepScroll: true });
       else if (S.view === 'feed') showFeed({ keepScroll: true });
       else if (S.view === 'rdv') showRdv({ keepScroll: true });
-      else if (S.view === 'chat') showChat({ still: true });
+      else if (S.view === 'chat') renderChatList({ still: true });
       else if (S.view === 'thread' && S.chatRendered !== chatOpen()) showThread();
     }
-    if (S.chatPolledAt === undefined || Date.now() - S.chatPolledAt > 14000) { S.chatPolledAt = Date.now(); if (S.view !== 'thread') await loadMessages(); }
+    if (S.chatPolledAt === undefined || Date.now() - S.chatPolledAt > 14000) {
+      S.chatPolledAt = Date.now();
+      if (S.view !== 'thread') { const n = (S.messages || []).length; await loadMessages(); if (S.view === 'chat' && n !== S.messages.length) renderChatList({ still: true }); }
+    }
     updateChatBadge();
   } catch (e) { console.warn(e); }
 }
@@ -346,7 +430,7 @@ function showOnboarding(edit = false) {
     onDone: async (p) => {
       S.profile = await S.store.saveProfile(p);
       if (edit) { toast('Portrait enregistré.'); return route(); }
-      showNotifGate(() => showSearch());
+      showNotifGate(() => showVerify(() => showSearch()));
     },
   });
 }
@@ -526,6 +610,8 @@ const STEPS = [
 
 function showSearch() {
   S.view = 'search';
+  live(null);
+  if (!S.profile.verified) return showVerifyWait();
   S.searchBox = h('div', {});
   root.replaceChildren(h('main', { class: 'screen' },
     topbar(),
@@ -591,6 +677,158 @@ async function trySearch() {
   } finally { S.searching = false; }
 }
 
+// ---------- Vérification d'identité ----------
+// Une photo d'une pièce d'identité officielle + un selfie. Vérifiés par l'équipe, puis supprimés.
+// Le sexe indiqué sur le document sert au matching (on ne le demande plus dans le questionnaire).
+async function shrinkImage(file, max = 1600) {
+  let src;
+  try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch {
+    src = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
+  }
+  const w = src.width || src.naturalWidth;
+  const ht = src.height || src.naturalHeight;
+  const k = Math.min(1, max / Math.max(w, ht));
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(w * k); cv.height = Math.round(ht * k);
+  cv.getContext('2d').drawImage(src, 0, 0, cv.width, cv.height);
+  return new Promise((res) => cv.toBlob((b) => res(b), 'image/jpeg', 0.85));
+}
+
+function showVerify(next, { rejected } = {}) {
+  S.view = 'verify';
+  const st = { doc: null, selfie: null, sex: null };
+  const err = h('div', { class: 'error', role: 'alert' });
+  const tile = (key, label, hint, capture, ic) => {
+    const prev = h('div', { class: 'id-prev' }, icon(ic), h('strong', {}, label), h('span', {}, hint));
+    const input = h('input', { type: 'file', accept: 'image/*', capture, hidden: true, onchange: async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      prev.replaceChildren(h('span', {}, 'Préparation…'));
+      try {
+        st[key] = await shrinkImage(f);
+        const url = URL.createObjectURL(st[key]);
+        prev.replaceChildren(h('img', { src: url, alt: label }), h('span', { class: 'id-ok' }, '✓ ' + label + ' · toucher pour changer'));
+      } catch { prev.replaceChildren(h('strong', {}, 'Image illisible'), h('span', {}, 'Réessaie avec une autre photo.')); }
+    } });
+    return h('button', { type: 'button', class: 'id-tile', onclick: () => input.click() }, prev, input);
+  };
+  const solo = !IS_REMOTE;
+  const sexPick = solo && h('div', { class: 'field' }, h('label', {}, 'Mode solo : le sexe indiqué sur ton document (simulé)'),
+    h('div', { class: 'chips' }, ['homme', 'femme'].map((x) => {
+      const b = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'false', onclick: () => { st.sex = x; b.parentNode.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', String(c === b))); } }, x === 'homme' ? 'Homme' : 'Femme');
+      return b;
+    })));
+  root.replaceChildren(h('main', { class: 'screen' },
+    h('div', { class: 'topbar' }, h('div', { class: 'brand' }, logo(), CONFIG.APP_NAME), h('span')),
+    h('div', { class: 'eyebrow' }, 'Sécurité'),
+    h('h1', { class: 'title', style: { fontSize: '44px' } }, 'Vérifie ton identité'),
+    h('div', { class: 'body' }, h('p', {}, 'Pour que chacun sache qu’il rencontre une vraie personne, tout le monde est vérifié avant le premier date.')),
+    rejected && status(`Ta dernière demande a été refusée : ${rejected}`, 'info'),
+    h('div', { class: 'id-grid' },
+      tile('doc', 'Ta pièce d’identité', 'Carte d’identité, passeport, permis ou titre de séjour · recto, bien lisible', 'environment', 'shield'),
+      tile('selfie', 'Un selfie', 'Ton visage, de face, bien éclairé', 'user', 'user')),
+    sexPick,
+    h('p', { class: 'small' }, 'Ton document n’est vu que par la personne qui vérifie, puis supprimé dès la vérification faite. On ne garde que « vérifié ✓ » et le sexe indiqué, pour le matching. Jamais montré aux autres.'),
+    err,
+    h('div', { class: 'spacer' }),
+    button('Envoyer pour vérification', async () => {
+      err.textContent = '';
+      if (!st.doc || !st.selfie) { err.textContent = 'Il faut la photo du document et un selfie.'; return; }
+      if (solo && !st.sex) { err.textContent = 'Choisis le sexe indiqué (simulation).'; return; }
+      try {
+        await S.store.submitVerification(st.doc, st.selfie, st.sex);
+        S.profile = await S.store.getProfile();
+        toast(solo ? 'Identité vérifiée (simulation).' : 'Envoyé. Je te préviens dès que c’est vérifié.');
+        next();
+      } catch (e) { err.textContent = /bucket|not found|storage/i.test(e.message) ? 'Le stockage des documents n’est pas prêt : relance le script SQL (admin).' : e.message; }
+    }),
+    button('Plus tard', () => next(), 'link'),
+  ));
+}
+
+// Écran d'attente tant que l'identité n'est pas vérifiée (la recherche ne démarre qu'après).
+async function showVerifyWait() {
+  S.view = 'search';
+  const box = h('div', {}, h('p', { class: 'small', style: { textAlign: 'center' } }, 'Chargement…'));
+  root.replaceChildren(h('main', { class: 'screen' },
+    topbar(),
+    h('div', { class: 'pulse' }, icon('shield')),
+    h('div', { class: 'eyebrow', style: { alignSelf: 'center' } }, 'Avant de chercher'),
+    h('h1', { class: 'title', style: { textAlign: 'center', marginBottom: '14px', fontSize: '44px' } }, 'Identité'),
+    box,
+    demoOn() && h('section', { class: 'demo' },
+      h('div', { class: 'k' }, 'Mode démo (admin)'),
+      button('Choisir mon match', () => pickMatch(), 'btn quiet')),
+    h('div', { class: 'spacer' }),
+    tabbar('home')));
+  const v = await S.store.getVerification?.() || { status: 'none' };
+  if (S.view !== 'search') return;
+  if (v.status === 'approved') { S.profile = await S.store.getProfile(); if (S.profile.verified) return showSearch(); }
+  const again = () => showVerify(() => showSearch(), { rejected: v.status === 'rejected' ? (v.note || 'document illisible') : null });
+  box.replaceChildren(...({
+    pending: [h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, 'Tes documents sont en cours de vérification. Je te préviens dès que c’est fait, puis je commence à chercher.')),
+      status('En cours de vérification', 'hourglass')],
+    rejected: [h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, `Ta vérification a été refusée : ${v.note || 'document illisible'}. Tu peux renvoyer de nouvelles photos.`)),
+      button('Renvoyer mes photos', again)],
+  }[v.status] || [h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, 'Pour que chacun rencontre une vraie personne, je vérifie l’identité de tout le monde avant le premier date. Ça prend une minute.')),
+    button('Vérifier mon identité', again)]));
+  // Tant que c'est en attente, on revérifie de temps en temps.
+  if (v.status === 'pending') setTimeout(() => { if (S.view === 'search' && !S.profile.verified) showVerifyWait(); }, 20000);
+}
+
+// Admin : demandes de vérification en attente.
+function adminVerifications() {
+  sheet((close) => {
+    const box = h('div', {}, h('p', { class: 'small' }, 'Chargement…'));
+    S.store.adminVerifications().then((list) => {
+      if (!list.length) { box.replaceChildren(h('p', { class: 'small' }, 'Aucune demande en attente.')); return; }
+      box.replaceChildren(h('div', { class: 'convs' }, list.map((v) => h('button', {
+        class: 'conv old', type: 'button', onclick: () => { close(); verifDetail(v); },
+      }, avatarOf(v.first_name), h('div', { class: 'conv-main' },
+        h('div', { class: 'conv-top' }, h('span', { class: 'conv-name' }, v.first_name || '(sans prénom)'), h('span', { class: 'conv-time' }, shortDay(Date.parse(v.submitted_at), Date.now()))),
+        h('div', { class: 'conv-bottom' }, h('span', { class: 'conv-preview' }, [v.email, v.city].filter(Boolean).join(' · '))))))));
+    }).catch((e) => box.replaceChildren(h('p', { class: 'small' }, `${e.message}. Relance le script SQL.`)));
+    return [h('h3', {}, 'Vérifications'), h('p', { class: 'sub' }, 'Compare le selfie et le document, vérifie l’âge, puis indique le sexe inscrit sur le document.'), box];
+  });
+}
+
+function verifDetail(v) {
+  sheet((close) => {
+    let sex = null;
+    let note = '';
+    const imgs = h('div', { class: 'id-grid' }, h('p', { class: 'small' }, 'Chargement des photos…'));
+    Promise.all([S.store.adminVerifUrl(v.doc_path), S.store.adminVerifUrl(v.selfie_path)]).then(([d, se]) => imgs.replaceChildren(
+      d ? h('a', { href: d, target: '_blank', rel: 'noopener', class: 'id-tile' }, h('div', { class: 'id-prev' }, h('img', { src: d, alt: 'Document' }), h('span', {}, 'Document'))) : h('p', { class: 'small' }, 'Document introuvable'),
+      se ? h('a', { href: se, target: '_blank', rel: 'noopener', class: 'id-tile' }, h('div', { class: 'id-prev' }, h('img', { src: se, alt: 'Selfie' }), h('span', {}, 'Selfie'))) : h('p', { class: 'small' }, 'Selfie introuvable')));
+    const ageTxt = v.birthdate ? `${Math.floor((Date.now() - Date.parse(v.birthdate)) / 31557600000)} ans (né·e le ${new Date(v.birthdate).toLocaleDateString('fr-FR')})` : 'âge inconnu';
+    const sexChips = h('div', { class: 'chips' }, ['homme', 'femme'].map((x) => {
+      const b = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'false', onclick: () => { sex = x; sexChips.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', String(c === b))); } }, x === 'homme' ? 'Homme' : 'Femme');
+      return b;
+    }));
+    const reasons = ['Document illisible', 'Le selfie ne correspond pas au document', 'Document non officiel ou expiré', 'Âge différent de celui déclaré'];
+    const err = h('div', { class: 'error' });
+    return [
+      h('h3', {}, v.first_name || 'Vérification'),
+      h('p', { class: 'sub' }, `Déclaré : ${v.first_name || '?'}, ${ageTxt} · ${v.email || ''}`),
+      imgs,
+      h('div', { class: 'field', style: { marginTop: '16px' } }, h('label', {}, 'Sexe inscrit sur le document'), sexChips),
+      err,
+      button('Valider l’identité', async () => {
+        if (!sex) { err.textContent = 'Indique le sexe inscrit sur le document.'; return; }
+        await S.store.adminDecideVerification(v.user_id, true, sex, null);
+        close(); toast('Identité validée. Photos supprimées.'); adminVerifications();
+      }),
+      h('div', { class: 'section-label' }, 'Ou refuser'),
+      h('div', { class: 'chips' }, reasons.map((r) => button(r, async () => {
+        note = r;
+        await S.store.adminDecideVerification(v.user_id, false, null, note);
+        close(); toast('Refusé. La personne peut renvoyer des photos.'); adminVerifications();
+      }, 'chip'))),
+    ];
+  });
+}
+
 async function nextMatch({ quiet } = {}) {
   await S.store.closeDate();
   S.data = null;
@@ -635,7 +873,7 @@ function showFeed({ keepScroll } = {}) {
     : h('section', { class: 'next' }, h('div', { class: 'k' }, 'Fin du jeu'), h('div', { class: 'when' }, 'Plus de message prévu'));
   updateCountdown();
 
-  const tiles = [...list].reverse().map((m) => {
+  const tiles = [...list].reverse().filter((m) => CARDS[m.key] && TILE[m.key]).map((m) => {
     const t = TILE[m.key](c);
     const unread = !s.has(m.key);
     const todo = needsAction(m.key, c);
@@ -646,19 +884,37 @@ function showFeed({ keepScroll } = {}) {
 
   const during = isDuringDate(date);
   const doneBar = during && mine.objectiveSeen && !mine.done && h('div', { class: 'done-bar' },
-    h('div', { class: 'txt' }, 'Ton objectif est atteint ? Écris-moi « fait ».'),
+    h('div', { class: 'txt' }, 'Ton objectif est atteint ? Appuie sur « Fait » : le premier prend 3 points.'),
     button('Fait', () => markDone(c)));
+  const accepted = Object.values(date.answers || {}).filter((x) => x?.accept === true).length === 2;
+  const started = during && clock.now() >= startOf(date);
+  const board = started ? scoreBoard(date, c.games) : null;
+  const other = S.data.partner?.id;
+  const scoreBox = board && h('section', { class: 'score-live' },
+    h('div', { class: 'k' }, 'Score en direct'),
+    h('div', { class: 'score-live-row' },
+      h('div', {}, h('strong', {}, String(board.total[S.uid])), h('span', {}, 'Toi')),
+      h('i', {}, '–'),
+      h('div', {}, h('strong', {}, String(board.total[other] ?? 0)), h('span', {}, S.data.partner?.firstName || ''))));
+  // « Mettre fin au date » : toujours accessible, en grand en bas de l'accueil.
+  const canEnd = accepted && !endedOf(date) && !list.some((m) => m.key === 'verdict');
+  const endBtn = canEnd && h('section', { class: 'end-zone' },
+    button('Mettre fin au date', () => endDateSheet(ctx()), 'btn end-btn'),
+    h('p', { class: 'small', style: { textAlign: 'center', margin: '8px 0 0' } }, 'À tout moment, sans te justifier. Ta sécurité passe avant le jeu.'));
 
   root.replaceChildren(h('main', { class: `screen plain${keepScroll ? ' still' : ''}` },
     topbar(),
     h('div', { class: 'eyebrow' }, S.data.partner ? `Ton date avec ${S.data.partner.firstName}` : 'Ton date'),
     h('h1', { class: 'title', style: { fontSize: '40px', marginBottom: '22px' } }, `${dayLabel(date.dateAt)}`),
     nextBox,
+    arriveBox(c),
+    scoreBox,
     pushBanner(),
     h('div', { class: 'tiles', style: { marginTop: '18px' } }, tiles),
     doneBar,
     demoOn() && demoPanel(),
     h('p', { class: 'foot' }, during ? 'On n’utilise pas son téléphone, sauf pour mes messages.' : `Je t’écris au bon moment. ${P.Il} reçoit les siens en même temps.`),
+    endBtn,
     h('div', { class: 'spacer' }),
     tabbar('home'),
   ));
@@ -714,7 +970,13 @@ function tabbar(active) {
   }, icon(ic), h('span', {}, label), id === 'chat' && h('span', { class: 'badge', id: 'chat-badge', hidden: true }));
   const bar = h('nav', { class: 'tabbar', 'aria-label': 'Navigation' }, tab('home', 'Accueil', 'home'), tab('rdv', 'Rendez-vous', 'cal'), tab('chat', 'Discussion', 'chat'));
   // La barre est sortie de l'écran animé : elle reste parfaitement fixe d'un onglet à l'autre.
-  queueMicrotask(() => { if (bar.isConnected) root.append(bar); updateChatBadge(); });
+  queueMicrotask(() => {
+    if (!bar.isConnected) return;
+    root.append(bar);
+    // L'écran garde toujours assez de place en bas pour que rien ne soit caché derrière la barre.
+    document.documentElement.style.setProperty('--tabbar-h', `${bar.offsetHeight}px`);
+    updateChatBadge();
+  });
   return bar;
 }
 
@@ -760,16 +1022,23 @@ async function loadMessages() {
 }
 
 // Onglet Discussion : liste des conversations (en cours en haut, anciennes en dessous).
+// Affichée tout de suite avec ce qu'on a déjà, puis mise à jour en arrière-plan (pas d'attente au toucher).
 async function showChat({ still } = {}) {
   S.view = 'chat';
+  renderChatList({ still });
+  const n = (S.messages || []).length;
+  const [, past] = await Promise.all([loadMessages(), S.store.getPastChats?.().catch(() => S.past || []) || []]);
+  S.past = past || [];
+  if (S.view === 'chat' && (n !== (S.messages || []).length || JSON.stringify(S.past.map((p) => p.messages.length)) !== S.pastSig)) renderChatList({ still: true });
+}
+
+function renderChatList({ still } = {}) {
   S.chatRendered = chatOpen();
-  const messages = await loadMessages();
-  const past = await S.store.getPastChats?.().catch(() => []) || [];
-  if (S.view !== 'chat') return;
-  S.past = past;
+  S.pastSig = JSON.stringify((S.past || []).map((p) => p.messages.length));
+  const messages = S.messages || [];
   const rows = [];
   const d = S.data;
-  if (d?.partner) {
+  if (d?.partner && !endedOf(d.date)) {
     const accepted = Object.values(d.date.answers || {}).filter((x) => x?.accept === true).length === 2;
     const last = messages[messages.length - 1];
     const opens = chatOpensAt(d.date);
@@ -783,32 +1052,36 @@ async function showChat({ still } = {}) {
           : last ? `${last.from === S.uid ? 'Toi : ' : ''}${last.body}` : 'Dis-lui que tu es en route 👋',
     });
   }
-  for (const t of past) {
+  for (const t of S.past || []) {
     const last = t.messages[t.messages.length - 1];
     rows.push({ id: t.dateId, name: t.name, at: last.at, preview: `${last.from === S.uid ? 'Toi : ' : ''}${last.body}`, past: t });
   }
+  const y = S.view === 'chat' && still ? scrollPos() : 0;
   root.replaceChildren(h('main', { class: `screen${still ? ' still' : ''}` },
     topbar(),
     chatListView(rows, (r) => (r.current ? showThread() : openPastThread(r.past))),
     h('div', { class: 'spacer' }),
     tabbar('chat')));
+  setScroll(y);
 }
 
-// Conversation en cours, plein écran.
-async function showThread() {
-  S.view = 'thread';
-  S.chatRendered = chatOpen();
+// Conversation en cours, plein écran, posée au-dessus de la liste : on la quitte en glissant vers la droite.
+function showThread() {
   const d = S.data;
   if (!d?.partner) return showChat();
-  const messages = await loadMessages();
-  pref.set(chatSeenKey(), messages.filter((m) => m.from !== S.uid).length);
+  if (S.view !== 'chat' && S.view !== 'thread') { S.view = 'chat'; renderChatList({ still: true }); }
+  S.view = 'thread';
+  S.chatRendered = chatOpen();
+  beat(true);
   const open = chatOpen();
   const opens = chatOpensAt(d.date);
-  root.replaceChildren(threadView({
+  const messages = S.messages || [];
+  pref.set(chatSeenKey(), messages.filter((m) => m.from !== S.uid).length);
+  const view = threadView({
     name: d.partner.firstName,
     sub: demoOn() && clock.now() < chatOpensAt(d.date) ? 'Aperçu admin · ouverte avant l’heure (mode démo)' : `Votre date · ${weekday(d.date.dateAt)} 20h`,
     messages, uid: S.uid,
-    onBack: () => showChat(),
+    onBack: () => closeThread(true),
     onSend: open ? async (body) => {
       const list = document.querySelector('.thread-list');
       // Affichage immédiat (optimiste), puis synchronisation.
@@ -820,17 +1093,31 @@ async function showThread() {
       await pollChat(true);
     } : null,
     lockedText: open ? '' : `La discussion s’ouvre ${relDay(opens, clock.now())} à ${hourLabel(opens)}, 1 h avant votre rendez-vous.`,
-  }));
-  const list = document.querySelector('.thread-list');
+  });
+  root.querySelector(':scope > .thread-wrap')?.remove();
+  const wrap = h('div', { class: 'thread-wrap' }, view);
+  root.append(wrap);
+  enableSwipeBack(wrap, { under: scroller(), onBack: () => closeThread(false) });
+  const list = wrap.querySelector('.thread-list');
   list.scrollTop = list.scrollHeight;
+  pollChat(true);
+}
+
+function closeThread(animate) {
+  const wrap = root.querySelector(':scope > .thread-wrap');
+  const done = () => { wrap?.remove(); S.view = 'chat'; beat(true); renderChatList({ still: true }); };
+  if (!wrap || !animate) return done();
+  document.activeElement?.blur?.();
+  wrap.classList.add('leaving');
+  setTimeout(done, 230);
 }
 
 async function pollChat(force) {
   if (S.view !== 'thread' || !chatOpen()) return;
   const before = (S.messages || []).filter((m) => !m.pending).length;
   const msgs = await loadMessages();
-  const list = document.querySelector('.thread-list');
-  if (!list || (!force && msgs.length === before)) return;
+  const list = document.querySelector('.thread-wrap .thread-list');
+  if (!list || S.view !== 'thread' || (!force && msgs.length === before)) return;
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
   renderMessages(list, msgs, S.uid);
   pref.set(chatSeenKey(), msgs.filter((m) => m.from !== S.uid).length);
@@ -840,11 +1127,20 @@ async function pollChat(force) {
 // Ancienne conversation : lecture seule.
 function openPastThread(t) {
   S.view = 'past-thread';
-  root.replaceChildren(threadView({
+  root.querySelector(':scope > .thread-wrap')?.remove();
+  const close = (animate) => {
+    const w = root.querySelector(':scope > .thread-wrap');
+    const done = () => { w?.remove(); S.view = 'chat'; renderChatList({ still: true }); };
+    if (!w || !animate) return done();
+    w.classList.add('leaving'); setTimeout(done, 230);
+  };
+  const wrap = h('div', { class: 'thread-wrap' }, threadView({
     name: t.name, sub: `Date du ${dayLabel(t.dateAt, { capital: false })}`, messages: t.messages, uid: S.uid,
-    onBack: () => showChat(), onSend: null, lockedText: 'Ancienne discussion · lecture seule',
+    onBack: () => close(true), onSend: null, lockedText: 'Ancienne discussion · lecture seule',
   }));
-  const list = document.querySelector('.thread-list');
+  root.append(wrap);
+  enableSwipeBack(wrap, { under: scroller(), onBack: () => close(false) });
+  const list = wrap.querySelector('.thread-list');
   list.scrollTop = list.scrollHeight;
 }
 
@@ -862,7 +1158,9 @@ function openMenu() {
     item('edit', 'Apparence', THEMES.find((t) => t.id === currentTheme())?.label, () => { close(); themeSheet(); }),
     demoOn() && S.store.adminListUsers && item('heart', 'Choisir mon match (admin)', 'Pour tester à deux', () => { close(); pickMatch(); }),
     S.admin && S.store.adminDiagnostics && item('info', 'Diagnostic (admin)', 'Notifications, tâches, fonction push', () => { close(); diagnostics(); }),
+    S.admin && S.store.adminVerifications && IS_REMOTE && item('shield', 'Vérifications d’identité (admin)', 'Valider les documents en attente', () => { close(); adminVerifications(); }),
     S.admin && item('clock', 'Mode démo (admin)', demoOn() ? 'Activé : tu peux avancer dans le temps' : 'Désactivé', () => { pref.set('demo', !demoOn()); if (!demoOn()) clock.reset(); close(); route(); }),
+    hasDate && !endedOf(S.data.date) && item('close', 'Mettre fin au date', 'À tout moment, sans te justifier', () => { close(); endDateSheet(ctx()); }, 'danger'),
     hasDate && item('shield', 'Un souci avec ce date ?', 'Annuler, signaler, se protéger', () => { close(); safety(); }),
     item('pause', S.profile?.paused ? 'Reprendre les rencontres' : 'Mettre en pause', 'On ne te proposera plus personne', async () => {
       S.profile = await S.store.saveProfile({ ...S.profile, paused: !S.profile.paused });
@@ -924,12 +1222,14 @@ function about() {
     h('h3', {}, 'Comment ça marche'),
     card({
       items: [
-        'Tu dresses ton portrait : physique, style, caractère, ambitions',
-        'Je trouve la personne la plus compatible près de toi',
+        'Tu dresses ton portrait et tu dis qui tu aimerais rencontrer',
+        'Je vérifie ton identité, puis je trouve la personne la plus compatible près de toi',
         'Tu lis son portrait, sans photo. Vous dites oui tous les deux',
-        'Le reste arrive par cartes : le lieu, sa phrase, les règles, ton objectif secret',
-        'Le soir venu : quatre jeux, des paris, et on révèle',
-        'Le lendemain, vous dites si vous voulez vous revoir. Seul le « oui » réciproque est révélé',
+        'Le reste arrive par cartes : le lieu, ses mots, les règles, ton objectif secret',
+        'Sur place, chacun appuie sur « Je suis arrivé·e » : les jeux commencent 30 min après',
+        'Quatre jeux adaptés à vos profils, avec des points. Le gagnant est révélé à la fin',
+        'Chacun peut mettre fin au date à tout moment',
+        'Le lendemain, vous dites si vous voulez vous revoir. Si ce n’est pas réciproque, chacun laisse un mot à l’autre',
       ],
     }),
     h('p', { class: 'small' }, 'Rendez-vous toujours dans un lieu public. Tes infos ne servent qu’au matching ; tu peux tout supprimer depuis le menu.'),

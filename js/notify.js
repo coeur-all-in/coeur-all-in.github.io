@@ -91,9 +91,10 @@ export async function show(body, tag) {
   toast(body);
 }
 
-// Appelé à chaque tick : notifie les cartes nouvellement débloquées (une seule fois chacune).
-export function notifyNew(dateId, unlockedMoments, { silentFirst } = {}) {
-  if (notifOff()) return [];
+// Appelé à chaque tick : signale les cartes nouvellement débloquées (une seule fois chacune).
+// Appli à l'écran → onFresh (bannière interne). Appli en arrière-plan → notification système,
+// seulement si `system` (en ligne, c'est le serveur qui envoie la notification push).
+export function notifyNew(dateId, unlockedMoments, { silentFirst, onFresh, system = true } = {}) {
   let seen;
   try { seen = JSON.parse(localStorage.getItem(NOTIFIED + dateId) || 'null'); } catch { seen = null; }
   const first = seen === null;
@@ -103,7 +104,9 @@ export function notifyNew(dateId, unlockedMoments, { silentFirst } = {}) {
   try { localStorage.setItem(NOTIFIED + dateId, JSON.stringify([...seen])); } catch { /* rien */ }
   if (first && silentFirst) return [];
   const last = fresh[fresh.length - 1];
-  if (last) show(last.notif, last.key);
+  if (!last) return fresh;
+  if (!document.hidden && onFresh) onFresh(last);
+  else if (system && !notifOff()) show(last.notif, last.key);
   return fresh;
 }
 

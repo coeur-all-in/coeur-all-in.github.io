@@ -58,6 +58,8 @@ export function card(spec) {
     spec.meta && h('div', { class: 'meta' }, spec.meta),
     spec.body?.length && h('div', { class: 'body' }, spec.body.map((p) => h('p', {}, p))),
     spec.quote && h('blockquote', { class: 'quote' }, `« ${spec.quote} »`),
+    // actionsFirst : la réponse attendue remonte juste sous le texte, visible sans faire défiler.
+    spec.actionsFirst && [spec.foot && h('div', { class: 'foot card-foot' }, spec.foot), h('div', { class: 'card-actions', style: { margin: '6px 0 4px' } }, spec.actions)],
     spec.before,
     spec.items?.length && list(spec.items),
     spec.extra,
@@ -67,8 +69,9 @@ export function card(spec) {
       typeof s.text === 'string' ? h('div', { class: s.italic ? 'italic' : 'body' }, s.italic ? s.text : h('p', {}, s.text)) : s.text,
     ]),
     h('div', { class: 'spacer' }),
-    spec.actions,
-    spec.foot && h('div', { class: 'foot' }, spec.foot),
+    // Le petit texte passe au-dessus du bouton : il n'est jamais caché par la barre d'onglets.
+    !spec.actionsFirst && spec.foot && h('div', { class: 'foot card-foot' }, spec.foot),
+    !spec.actionsFirst && spec.actions && h('div', { class: 'card-actions' }, spec.actions),
   ];
 }
 
@@ -158,6 +161,44 @@ export function confirmSheet({ title, sub, yes, no = 'Annuler', danger }) {
       button(no, () => { answered = true; close(); resolve(false); }, 'link'),
     ], { onClose: () => { if (!answered) resolve(false); } });
   });
+}
+
+// ---------- Bannière interne (comme une notification, mais dans l'appli) ----------
+// Descend du haut, avec le prénom et le message. Touche → onTap ; glisse vers le haut → fermer.
+let bannerEl = null;
+export function banner({ title, body, initial, onTap, duration = 4500 }) {
+  bannerEl?.dismiss?.();
+  const el = h('div', { class: 'banner', role: 'status' },
+    h('div', { class: 'banner-av' }, (initial || title || '♥').trim().charAt(0).toUpperCase()),
+    h('div', { class: 'banner-main' }, h('div', { class: 'banner-t' }, title), body && h('div', { class: 'banner-b' }, body)));
+  let gone = false;
+  let timer;
+  const dismiss = () => {
+    if (gone) return;
+    gone = true;
+    clearTimeout(timer);
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 260);
+    if (bannerEl === el) bannerEl = null;
+  };
+  el.dismiss = dismiss;
+  let y0 = null;
+  let dy = 0;
+  el.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; dy = 0; el.style.transition = 'none'; clearTimeout(timer); }, { passive: true });
+  el.addEventListener('touchmove', (e) => { if (y0 == null) return; dy = Math.min(0, e.touches[0].clientY - y0); el.style.transform = `translate(-50%, ${dy}px)`; }, { passive: true });
+  el.addEventListener('touchend', () => {
+    el.style.transition = '';
+    if (dy < -30) { dismiss(); return; }
+    el.style.transform = '';
+    timer = setTimeout(dismiss, duration);
+    y0 = null;
+  });
+  el.addEventListener('click', () => { if (Math.abs(dy) > 8) return; dismiss(); onTap?.(); });
+  document.body.append(el);
+  bannerEl = el;
+  navigator.vibrate?.(12);
+  timer = setTimeout(dismiss, duration);
+  return dismiss;
 }
 
 let toastTimer;

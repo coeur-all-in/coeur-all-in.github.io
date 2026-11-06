@@ -1,7 +1,7 @@
-// Création / modification du portrait : 7 étapes courtes.
+// Création / modification du portrait : 8 étapes courtes.
 import {
-  AMBITIONS, BUILDS, EYES, GENDERS, HABITS, HAIR_COLORS, HAIR_LENGTHS, INTENTS, INTERESTS, KIDS,
-  ORIGINS, SEEKING, STYLES, TRAITS, VALUES, forms, portraitText,
+  AMBITIONS, BUILDS, HABITS, INTENTS, INTERESTS, KIDS,
+  ORIGINS, PLAY, SEEKING, STYLES, TRAITS, VALUES, forms, portraitText,
 } from '../content.js';
 import { age } from '../matching.js';
 import { button, h, icon, toast } from '../ui.js';
@@ -57,13 +57,14 @@ function range(get, set, { min, max, step = 1, fmt = (v) => v, left, right }) {
 // ---------- Les étapes ----------
 function steps(p) {
   const f = () => forms(p.gender);
+  // Avant la vérification d'identité, on ne connaît pas le sexe : on écrit le prénom.
+  const who = () => (p.gender ? f().Il : (p.firstName?.trim() || 'Ton prénom'));
   return [
     {
       eyebrow: 'Pour commencer', title: 'Toi',
       render: () => [
         field('Ton prénom (c’est tout ce qu’on saura de ton nom)', text(() => p.firstName, (v) => { p.firstName = v; }, { placeholder: 'Marie', autocomplete: 'given-name', maxlength: 30 })),
         field('Ta date de naissance', text(() => p.birthdate, (v) => { p.birthdate = v; }, { type: 'date', max: new Date().toISOString().slice(0, 10) })),
-        field('Tu es', chips(GENDERS, () => p.gender, (v) => { p.gender = v; })),
         field('Tu aimerais rencontrer', chips(SEEKING, () => p.seeking, (v) => { p.seeking = v; }, { multi: true })),
         h('div', { class: 'field' }, h('label', {}, 'Entre quel âge et quel âge ?'),
           h('div', { class: 'row2' },
@@ -74,7 +75,6 @@ function steps(p) {
         if (!p.firstName?.trim()) return 'Ton prénom, s’il te plaît.';
         if (!p.birthdate) return 'Ta date de naissance est nécessaire.';
         if (age(p.birthdate) < 18) return 'Cœur All In est réservé aux personnes majeures.';
-        if (!p.gender) return 'Dis-moi qui tu es.';
         if (!p.seeking?.length) return 'Dis-moi qui tu aimerais rencontrer.';
         if (!(p.ageMin >= 18 && p.ageMax >= p.ageMin)) return 'La tranche d’âge ne va pas (18 ans minimum).';
         return null;
@@ -117,21 +117,17 @@ function steps(p) {
       },
     },
     {
-      eyebrow: 'Pour te reconnaître', title: 'Ton physique',
+      eyebrow: 'Pour le matching', title: 'Ton physique',
       render: () => {
         const ht = range(() => p.height, (v) => { p.height = v; }, { min: 140, max: 210, fmt: (v) => `${Math.floor(v / 100)}m${String(v % 100).padStart(2, '0')}` });
         return [
-          h('p', { class: 'small', style: { margin: '0 0 22px' } }, 'Pas de photo. Ces infos ne sont révélées que la veille du date, pour que vous puissiez vous reconnaître.'),
+          h('p', { class: 'small', style: { margin: '0 0 22px' } }, 'Pas de photo. Ça sert seulement à te trouver quelqu’un qui te correspond : ce n’est jamais montré à l’autre. Pour vous reconnaître, tu écriras toi-même un petit mot la veille.'),
           h('div', { class: 'field' }, h('label', {}, 'Ta taille ', ht.val), ht.node),
           field('Ta silhouette', chips(BUILDS, () => p.build, (v) => { p.build = v; })),
-          field('Tes cheveux', chips(HAIR_COLORS, () => p.hairColor, (v) => { p.hairColor = v; })),
-          field('Leur longueur', chips(HAIR_LENGTHS, () => p.hairLength, (v) => { p.hairLength = v; })),
-          field('Tes yeux', chips(EYES, () => p.eyes, (v) => { p.eyes = v; })),
           field('Tes origines (facultatif)', chips(ORIGINS, () => p.origins, (v) => { p.origins = v; }, { multi: true, max: 3 })),
-          field('Un détail pour te reconnaître (facultatif)', text(() => p.distinctive, (v) => { p.distinctive = v; }, { placeholder: 'Un foulard jaune, toujours', maxlength: 60 })),
         ];
       },
-      validate: () => (!p.build || !p.hairColor || !p.eyes ? 'Silhouette, cheveux et yeux, au minimum.' : null),
+      validate: () => (!p.build ? 'Choisis ta silhouette.' : null),
     },
     {
       eyebrow: 'Ce qui te ressemble', title: 'Ton style',
@@ -157,11 +153,18 @@ function steps(p) {
           return h('div', { class: 'field' }, r.node);
         });
         const pf = (label, key, ph) => h('div', { class: 'field' }, h('label', {}, label),
-          h('div', { class: 'prefix' }, h('span', {}, key === 'unforgivable' ? 'sauf' : key === 'first' ? `${f().Il} est` : f().Il),
+          h('div', { class: 'prefix' }, h('span', {}, key === 'unforgivable' ? 'sauf' : key === 'first' ? `${who()} est` : who()),
             text(() => p.portrait[key], (v) => { p.portrait[key] = v; upd(); }, { placeholder: ph, maxlength: 110 })));
         upd();
+        const play = h('div', { class: 'play-pick' });
+        const renderPlay = () => play.replaceChildren(...PLAY.map((o) => h('button', {
+          type: 'button', class: 'play-opt', 'aria-pressed': String(p.play === o.id),
+          onclick: () => { p.play = o.id; renderPlay(); },
+        }, h('strong', {}, o.label), h('span', {}, o.d))));
+        renderPlay();
         return [
           ...sliders,
+          h('div', { class: 'field' }, h('label', {}, 'Pendant le date, côté jeux, tu es plutôt…'), play),
           h('div', { class: 'section-label' }, 'Ton portrait'),
           h('p', { class: 'small', style: { margin: '0 0 18px' } }, 'Écris comme si un ami parlait de toi. C’est ce que lira la personne choisie, sans photo.'),
           pf('Ce qu’on remarque dès les premières minutes', 'first', 'calme, au point que ça se remarque'),
@@ -240,13 +243,14 @@ export function defaults(existing) {
   return {
     firstName: '', birthdate: '', gender: null, seeking: [], ageMin: 24, ageMax: 38,
     city: '', lat: null, lng: null, maxKm: 25, availability: [5, 6],
-    height: 172, build: null, hairColor: null, hairLength: null, eyes: null, origins: [], distinctive: '',
+    height: 172, build: null, origins: [], play: 2,
     style: [], values: [], interests: [],
     traits: { social: 3, tempo: 3, plan: 3, talk: 3 },
     portrait: { first: '', people: '', unforgivable: '' },
     job: '', ambitions: [], intent: null, kids: null, smoke: null, drink: null,
     consent18: false, consentData: false, consentSafety: false,
     ...structuredClone(existing || {}),
+    seeking: (existing?.seeking || []).filter((x) => x === 'homme' || x === 'femme'),
     want: {
       styles: [], builds: [], heightMin: 150, heightMax: 200, traits: { social: 0, tempo: 0, plan: 0, talk: 0 },
       values: [], interests: [], smoke: 'egal',

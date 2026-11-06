@@ -41,8 +41,40 @@ export function nextDateSlot(fromTs, availA, availB) {
   return start.getTime() + 7 * DAY;
 }
 
+// ---------- Arrivée et fin du date ----------
+// Les jeux démarrent 30 min après l'arrivée des deux (bouton « Je suis là »).
+// Si l'un des deux n'a pas appuyé à 20h45, on démarre quand même à 20h45.
+export const FALLBACK_START = 45 * 60e3;
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+export function arrivals(date) {
+  const A = date.answers || {};
+  return { [date.a]: num(A[date.a]?.arrived), [date.b]: num(A[date.b]?.arrived) };
+}
+
+export function startOf(date) {
+  const fb = date.dateAt + FALLBACK_START;
+  const r = arrivals(date);
+  const x = r[date.a];
+  const y = r[date.b];
+  return x != null && y != null ? Math.min(Math.max(x, y), fb) : fb;
+}
+
+// Quelqu'un a mis fin au date ? { at, by, note }
+export function endedOf(date) {
+  const A = date.answers || {};
+  const list = [date.a, date.b].map((u) => (A[u]?.ended?.at ? { ...A[u].ended, by: u } : null)).filter(Boolean);
+  return list.sort((p, q) => p.at - q.at)[0] || null;
+}
+
+// Écarts des cartes de la soirée par rapport au début (en minutes).
+export const GAME_STEP = 30;
+const PARI_AT = 4 * GAME_STEP + 15;
+const REVEAL_AT = 4 * GAME_STEP + 40;
+
 // La liste ordonnée des moments du date pour `me`.
 // Chaque moment : { key, at, notif, ready(date) } — ready dit si les conditions sont réunies.
+// card: false → pas de carte, seulement une notification (ex. l'autre est arrivé).
 export function moments(date, me) {
   const other = date.a === me ? date.b : date.a;
   const A = (u) => date.answers?.[u] || {};
@@ -52,8 +84,13 @@ export function moments(date, me) {
   const created = date.createdAt;
   const tonTour = Math.max(created, at(D, -3, 10));
   const deadline = Math.max(tonTour + 2 * H, at(D, -2, 12));
+  const arr = arrivals(date);
+  const bothHere = arr[me] != null && arr[other] != null;
+  const st = startOf(date);
+  const end = endedOf(date);
+  const min = (n) => st + n * 60e3;
 
-  return [
+  const list = [
     { key: 'invite', at: created, notif: 'Quelqu’un a pensé à toi.', ready: () => true },
     { key: 'cadrage', at: created, notif: 'C’est calé.', ready: bothAccepted },
     { key: 'tonTour', at: tonTour, deadline, notif: 'À ton tour. Réponse attendue avant demain midi.', ready: bothAccepted },
@@ -61,16 +98,21 @@ export function moments(date, me) {
     { key: 'lieu', at: at(D, -1, 20), notif: 'Le lieu est fixé.', ready: bothAccepted },
     { key: 'regles', at: at(D, 0, 10), notif: 'Les règles, avant ce soir.', ready: bothAccepted },
     { key: 'objectif', at: at(D, 0, 14), notif: 'Personne d’autre ne le sait.', ready: bothAccepted },
-    { key: 'discussion', at: at(D, 0, 19), notif: 'La discussion est ouverte. Vous vous voyez dans une heure.', ready: bothAccepted },
-    { key: 'jeu1', at: at(D, 0, 20, 30), notif: 'Premier jeu.', ready: bothAccepted },
-    { key: 'jeu2', at: at(D, 0, 21, 0), notif: 'Deuxième jeu.', ready: bothAccepted },
-    { key: 'jeu3', at: at(D, 0, 21, 30), notif: 'Troisième jeu. Et vous pouvez parler boulot.', ready: bothAccepted },
-    { key: 'jeu4', at: at(D, 0, 22, 0), notif: 'Quatrième jeu.', ready: bothAccepted },
-    { key: 'pari', at: at(D, 0, 22, 15), notif: 'On rouvre les paris.', ready: bothAccepted },
-    { key: 'reveal', at: at(D, 0, 22, 40), notif: 'On révèle.', ready: bothAccepted },
+    { key: 'discussion', at: D - H, notif: 'La discussion est ouverte. Vous vous voyez dans une heure.', ready: bothAccepted },
+    { key: 'arrive', card: false, at: arr[other], notif: 'est là.', ready: () => bothAccepted() && arr[other] != null && arr[me] == null },
+    { key: 'start', at: bothHere ? Math.max(arr[me], arr[other]) : null, notif: 'Vous êtes là tous les deux : le date commence.', ready: () => bothAccepted() && bothHere },
+    { key: 'jeu1', at: min(GAME_STEP), notif: 'Premier jeu.', ready: bothAccepted },
+    { key: 'jeu2', at: min(2 * GAME_STEP), notif: 'Deuxième jeu.', ready: bothAccepted },
+    { key: 'jeu3', at: min(3 * GAME_STEP), notif: 'Troisième jeu. Et vous pouvez parler boulot.', ready: bothAccepted },
+    { key: 'jeu4', at: min(4 * GAME_STEP), notif: 'Quatrième jeu.', ready: bothAccepted },
+    { key: 'pari', at: min(PARI_AT), notif: 'On rouvre les paris.', ready: bothAccepted },
+    { key: 'reveal', at: min(REVEAL_AT), notif: 'On révèle les objectifs.', ready: bothAccepted },
+    { key: 'score', at: min(REVEAL_AT), notif: 'Les points sont comptés : qui a gagné ?', ready: () => bothAccepted() && both('guessed') },
+    { key: 'fin', at: end?.at ?? null, notif: 'a mis fin au date.', ready: () => !!end && end.by === other },
     { key: 'apres', at: at(D, 1, 11), notif: 'Et maintenant ?', ready: bothAccepted },
     { key: 'verdict', at: at(D, 1, 11), notif: 'Vous avez répondu tous les deux.', ready: () => both('again') },
   ];
+  return list.filter((m) => m.at != null && (!end || m.key === 'fin' || m.at <= end.at));
 }
 
 // Cartes visibles maintenant, dans l'ordre d'arrivée.
@@ -82,12 +124,18 @@ export function unlocked(date, me, now = clock.now()) {
 // Prochain moment programmé (pour le compte à rebours et les notifications).
 export function nextMoment(date, me, now = clock.now()) {
   if (!date) return null;
-  return moments(date, me).find((m) => m.at > now && m.key !== 'verdict') || null;
+  return moments(date, me).find((m) => m.at > now && !['verdict', 'score', 'arrive', 'start', 'fin'].includes(m.key)) || null;
 }
 
-// La soirée est-elle en cours ? (pour le bouton « fait » et le mode soirée)
+// La soirée est-elle en cours ? (pour le bouton « fait », les jeux et le mode soirée)
 export function isDuringDate(date, now = clock.now()) {
-  return now >= at(date.dateAt, 0, 20) && now < at(date.dateAt, 1, 2);
+  if (endedOf(date)) return false;
+  return now >= date.dateAt - 30 * 60e3 && now < at(date.dateAt, 1, 4);
+}
+
+// Fenêtre du bouton « Je suis là » : dès l'ouverture de la discussion (1 h avant), jusqu'à 2 h après.
+export function canArrive(date, now = clock.now()) {
+  return !endedOf(date) && now >= date.dateAt - H && now < date.dateAt + 2 * H;
 }
 
 // Pour le mode démo : prochain instant intéressant (moment suivant, ou +1 min).

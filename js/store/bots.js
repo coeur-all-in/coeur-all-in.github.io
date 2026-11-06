@@ -3,7 +3,7 @@
 
 const base = {
   lat: 48.8566, lng: 2.3522, city: 'Paris', maxKm: 30, ageMin: 22, ageMax: 45,
-  availability: [6, 5, 4], smoke: 'jamais', drink: 'parfois', bot: true,
+  availability: [6, 5, 4], smoke: 'jamais', drink: 'parfois', bot: true, play: 2,
 };
 
 const noccio = {

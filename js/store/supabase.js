@@ -26,6 +26,7 @@ export async function createSupabaseStore() {
   let userId = null;
   let email = null;
   let currentDateId = null;
+  let channel = null;
   let recovery = /type=recovery/.test(location.hash);
   const listeners = new Set();
 
@@ -141,20 +142,70 @@ export async function createSupabaseStore() {
 
     // ---------- Profil ----------
     async getProfile() {
-      const row = check(await sb.from('profiles').select('data, active').eq('id', userId).maybeSingle());
+      const row = check(await sb.from('profiles').select('data, active, gender, verified').eq('id', userId).maybeSingle());
       if (!row) return null;
       const { phone, ...data } = row.data || {}; // anciens profils : on ignore le numéro
-      return { ...data, id: userId, paused: row.active === false };
+      // Le sexe vient de la vérification d'identité (colonne gérée par le serveur), jamais du formulaire.
+      return { ...data, gender: row.gender || null, verified: !!row.verified, id: userId, paused: row.active === false };
     },
 
     async saveProfile(p) {
-      const { phone, ...data } = p; // plus de numéro : jamais envoyé
+      const { phone, gender, verified, paused, id, ...data } = p; // sexe et vérification : gérés par le serveur
       check(await sb.from('profiles').upsert({
-        id: userId, data, gender: p.gender, seeking: p.seeking, birthdate: p.birthdate,
+        id: userId, data, seeking: p.seeking, birthdate: p.birthdate,
         age_min: p.ageMin, age_max: p.ageMax, city: p.city, lat: p.lat ?? null, lng: p.lng ?? null,
         max_km: p.maxKm, availability: p.availability, active: p.paused !== true, updated_at: new Date().toISOString(),
       }));
       return { ...p, id: userId };
+    },
+
+    // ---------- Vérification d'identité ----------
+    async getVerification() {
+      try { return check(await sb.rpc('my_verification')) || { status: 'none' }; } catch { return { status: 'none' }; }
+    },
+    async submitVerification(doc, selfie) {
+      const stamp = Date.now();
+      const up = async (blob, name) => {
+        const path = `${userId}/${name}-${stamp}.jpg`;
+        check(await sb.storage.from('id-docs').upload(path, blob, { contentType: 'image/jpeg', upsert: true }));
+        return path;
+      };
+      const [docPath, selfiePath] = await Promise.all([up(doc, 'document'), up(selfie, 'selfie')]);
+      check(await sb.rpc('submit_verification', { p_doc: docPath, p_selfie: selfiePath }));
+      return { status: 'pending' };
+    },
+    async adminVerifications() {
+      return check(await sb.rpc('admin_verifications')) || [];
+    },
+    async adminVerifUrl(path) {
+      if (!path) return null;
+      const { data } = await sb.storage.from('id-docs').createSignedUrl(path, 600);
+      return data?.signedUrl || null;
+    },
+    async adminDecideVerification(user, ok, sex, note) {
+      const paths = check(await sb.rpc('admin_decide_verification', { p_user: user, p_ok: ok, p_sex: sex, p_note: note || null })) || [];
+      // Le document et le selfie sont supprimés dès la décision.
+      const list = paths.filter(Boolean);
+      if (list.length) await sb.storage.from('id-docs').remove(list).catch(() => {});
+    },
+
+    // ---------- Présence (pas de notification push quand l'appli est ouverte) ----------
+    async presence(where) {
+      try { await sb.rpc('set_presence', { p_where: where }); } catch { /* rien */ }
+    },
+
+    // ---------- Temps réel : messages, réponses et avance du temps, instantanément ----------
+    subscribe(dateId, onEvent) {
+      if (channel) { sb.removeChannel(channel); channel = null; }
+      if (!dateId) return;
+      channel = sb.channel(`date-${dateId}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `date_id=eq.${dateId}` },
+          (p) => onEvent({ table: 'messages', row: p.new }))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'answers', filter: `date_id=eq.${dateId}` },
+          (p) => onEvent({ table: 'answers', row: p.new }))
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'dates', filter: `id=eq.${dateId}` },
+          (p) => onEvent({ table: 'dates', row: p.new }))
+        .subscribe();
     },
 
     // ---------- Matching ----------
@@ -176,9 +227,9 @@ export async function createSupabaseStore() {
       const other = row.a === userId ? row.b : row.a;
       const [answers, prof] = await Promise.all([
         sb.from('answers').select('user_id,key,value').eq('date_id', row.id).then(check),
-        sb.from('profiles').select('data').eq('id', other).maybeSingle().then(check),
+        sb.from('profiles').select('data, gender').eq('id', other).maybeSingle().then(check),
       ]);
-      return { date: toDate(row, answers), partner: prof ? { ...prof.data, id: other } : null };
+      return { date: toDate(row, answers), partner: prof ? { ...prof.data, gender: prof.gender || null, id: other } : null };
     },
 
     async answer(key, value) {
