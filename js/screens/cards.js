@@ -67,7 +67,7 @@ async function act(c, key, value, msg) {
 // ---------- Arrivée (« Je suis là ») ----------
 // Bloc réutilisé dans l'accueil, l'onglet Rendez-vous et la carte Discussion.
 export function arriveBox(c, { compact } = {}) {
-  if (!canArrive(c.date, c.now) && arrivals(c.date)[c.uid] == null) return null;
+  if (!canArrive(c.date, c.now)) return null;
   const name = c.partner?.firstName || 'Ton date';
   const r = arrivals(c.date);
   const mine = r[c.uid];
