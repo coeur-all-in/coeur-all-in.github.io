@@ -1264,3 +1264,41 @@ language sql stable security definer set search_path = public as $$
   select exists (select 1 from setups s where s.status = 'accepted'
     and ((s.b1 = uid and s.b1_status = 'accepted') or (s.b2 = uid and s.b2_status = 'accepted')))
 $$;
+
+-- ================================================================ Lien d'ami
+-- Chacun a un lien personnel (…/?friend=CODE). La personne qui l'ouvre et accepte devient amie directement.
+alter table public.profiles add column if not exists friend_code text unique;
+
+create or replace function public.my_friend_code() returns text
+language sql security definer set search_path = public as $$
+  update profiles set friend_code = coalesce(friend_code, encode(gen_random_bytes(9), 'hex'))
+  where id = auth.uid() returning friend_code
+$$;
+
+-- Ce que montre un lien d'ami (même sans compte) : seulement le prénom.
+create or replace function public.friend_code_info(p_code text) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce(data->>'firstName', 'Quelqu’un') from profiles where friend_code = p_code and p_code is not null
+$$;
+
+create or replace function public.friend_by_code(p_code text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := auth.uid();
+  other uuid;
+begin
+  if me is null then raise exception 'Crée d’abord ton compte.'; end if;
+  select id into other from profiles where friend_code = p_code and p_code is not null;
+  if other is null then raise exception 'Lien d’ami invalide.'; end if;
+  if other = me then return jsonb_build_object('status', 'self'); end if;
+  insert into friendships (requester, addressee, status) values (other, me, 'accepted')
+  on conflict ((least(requester, addressee)), (greatest(requester, addressee))) do update set status = 'accepted';
+  insert into push_queue (user_id, body) values (other, public.first_name(me) || ' a utilisé ton lien : vous êtes amis sur Cœur All In.');
+  return jsonb_build_object('status', 'accepted', 'name', public.first_name(other));
+end $$;
+
+revoke all on function public.my_friend_code() from public, anon;
+grant execute on function public.my_friend_code() to authenticated;
+revoke all on function public.friend_by_code(text) from public, anon;
+grant execute on function public.friend_by_code(text) to authenticated;
+grant execute on function public.friend_code_info(text) to anon, authenticated;

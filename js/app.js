@@ -297,8 +297,9 @@ async function afterLogin() {
   if (!S.profile) return S.store.needsAuth ? showOnboarding() : showWelcome();
   const go = async () => {
     const t = IS_REMOTE ? await pendingInvite() : null;
-    if (t) return showInvite(t, () => route({ autoOpen: true }));
-    return route({ autoOpen: true });
+    if (t) return showInvite(t, () => route({ autoOpen: true }).then(handleFriendLink));
+    await route({ autoOpen: true });
+    handleFriendLink();
   };
   if (needsNotifGate()) return showNotifGate(go);
   await go();
@@ -411,6 +412,7 @@ function showWelcome() {
   root.replaceChildren(h('main', { class: 'screen' },
     h('div', { class: 'topbar' }, h('div', { class: 'brand' }, logo(), CONFIG.APP_NAME), h('span')),
     pref.get(INVITE, null) && status('Un ami veut te présenter quelqu’un : crée ton compte pour voir son invitation.', 'heart'),
+    !pref.get(INVITE, null) && pref.get('friendCode', null) && status('Un ami t’a envoyé son lien : crée ton compte pour l’ajouter.', 'heart'),
     h('div', { class: 'eyebrow' }, 'Pas de photo. Pas de swipe.'),
     h('h1', { class: 'title' }, 'Un soir, une personne'),
     h('div', { class: 'meta' }, 'Le reste, je m’en occupe'),
@@ -443,7 +445,7 @@ function showOnboarding(edit = false) {
       S.profile = await S.store.saveProfile(p);
       if (edit) { toast('Portrait enregistré.'); return route(); }
       const t = pref.get(INVITE, null);
-      showNotifGate(() => showLiveness(() => (t ? showInvite(t, () => route({ autoOpen: true })) : showSearch()), { later: !t }));
+      showNotifGate(() => showLiveness(() => (t ? showInvite(t, () => route({ autoOpen: true }).then(handleFriendLink)) : (showSearch(), handleFriendLink())), { later: !t }));
     },
   });
 }
@@ -786,6 +788,13 @@ function friendsSheet() {
           load();
         } catch (e) { err.textContent = e.message; }
       }),
+      h('div', { class: 'section-label' }, 'Ou envoie ton lien d’ami'),
+      h('p', { class: 'small', style: { margin: '0 0 10px' } }, 'La personne qui l’ouvre devient ton amie en un geste, même si elle n’a pas encore l’appli.'),
+      button('Envoyer mon lien d’ami (WhatsApp, SMS…)', async () => {
+        if (!IS_REMOTE) { toast('Disponible en mode en ligne.'); return; }
+        try { shareLink(`friend=${await S.store.myFriendCode()}`, `${S.profile?.firstName || 'Moi'} t’ajoute en ami sur Cœur All In 💘`); }
+        catch (e) { toast(`${e.message}. Relance le script SQL.`); }
+      }, 'btn quiet'),
       h('div', { class: 'section-label' }, 'Liste'),
       box,
     ];
@@ -913,11 +922,29 @@ function ficheSheet(x) {
 }
 
 function shareInvite(token) {
-  if (!token) return;
-  const url = `${location.origin}${location.pathname}?invite=${token}`;
-  const text = 'Je veux te présenter quelqu’un sur Cœur All In 💘';
+  if (token) shareLink(`invite=${token}`, 'Je veux te présenter quelqu’un sur Cœur All In 💘');
+}
+
+function shareLink(query, text) {
+  const url = `${location.origin}${location.pathname}?${query}`;
   if (navigator.share) navigator.share({ title: 'Cœur All In', text, url }).catch(() => {});
   else navigator.clipboard?.writeText(url).then(() => toast('Lien copié. Envoie-le à ton ami.'), () => toast(url));
+}
+
+// Lien d'ami ouvert : on propose d'ajouter la personne (après connexion).
+const FRIEND = 'friendCode';
+async function handleFriendLink() {
+  const code = pref.get(FRIEND, null);
+  if (!code || !IS_REMOTE) return;
+  pref.set(FRIEND, null);
+  const name = await S.store.friendCodeInfo(code);
+  if (!name) { toast('Ce lien d’ami n’est plus valable.'); return; }
+  if (await confirmSheet({ title: `Ajouter ${name} en ami ?`, sub: `${name} t’a envoyé son lien. Entre amis, vous pourrez organiser un date pour deux de vos proches.`, yes: 'Ajouter en ami', no: 'Pas maintenant' })) {
+    try {
+      const r = await S.store.addFriendByCode(code);
+      toast(r.status === 'self' ? 'C’est ton propre lien 🙂' : `${r.name} et toi êtes amis.`);
+    } catch (e) { toast(e.message); }
+  }
 }
 
 // ---------- Invitation reçue (je suis l'ami présenté) ----------
@@ -925,7 +952,10 @@ const INVITE = 'invite';
 function takeInviteFromUrl() {
   const q = new URLSearchParams(location.search);
   const t = q.get('invite');
-  if (t) { pref.set(INVITE, t); history.replaceState(null, '', location.pathname); }
+  const f = q.get('friend');
+  if (t) pref.set(INVITE, t);
+  if (f) pref.set('friendCode', f);
+  if (t || f) history.replaceState(null, '', location.pathname);
 }
 takeInviteFromUrl();
 

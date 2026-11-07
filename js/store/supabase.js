@@ -170,6 +170,9 @@ export async function createSupabaseStore() {
     async addFriend(mail) { return check(await sb.rpc('friend_request', { p_email: mail })); },
     async respondFriend(id, ok) { check(await sb.rpc('friend_respond', { p_id: id, p_ok: ok })); },
     async removeFriend(id) { check(await sb.rpc('friend_remove', { p_id: id })); },
+    async myFriendCode() { return check(await sb.rpc('my_friend_code')); },
+    async friendCodeInfo(code) { try { return check(await sb.rpc('friend_code_info', { p_code: code })); } catch { return null; } },
+    async addFriendByCode(code) { return check(await sb.rpc('friend_by_code', { p_code: code })); },
 
     // ---------- « Je matche pour mon ami » ----------
     async setups() { return check(await sb.rpc('my_setups')) || []; },
