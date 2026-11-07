@@ -795,7 +795,7 @@ function friendsSheet() {
 // ---------- « Je matche pour un ami » ----------
 // A1 et A2 (amis) se choisissent ; chacun invite un ami (B1, B2) par e-mail ou lien ;
 // si B1 et B2 acceptent, chacun écrit la fiche de son ami (et voit celle de l'autre) ; puis le date est créé.
-const SETUP_STEPS = ['Vous vous choisissez', 'Chacun invite un ami', 'Les deux amis acceptent', 'Vous écrivez leurs fiches', 'Le date commence'];
+const SETUP_STEPS = ['Vous vous choisissez', 'Chacun envoie un lien à un ami', 'Les deux amis acceptent', 'Vous écrivez leurs fiches', 'Le date commence'];
 
 async function showFriendMatch() {
   S.view = 'setups';
@@ -822,7 +822,7 @@ async function showFriendMatch() {
     h('div', { class: 'section-label' }, 'Nouveau'),
     accepted.length
       ? h('div', { class: 'chips' }, accepted.map((f) => button(`Avec ${f.name}`, async () => {
-        if (!(await confirmSheet({ title: `Organiser un date avec ${f.name} ?`, sub: `${f.name} doit accepter aussi. Ensuite, chacun invite un ami à rencontrer celui de l’autre.`, yes: 'Proposer' }))) return;
+        if (!(await confirmSheet({ title: `Organiser un date avec ${f.name} ?`, sub: `${f.name} doit accepter aussi. Ensuite, chacun envoie un lien d’invitation à un ami.`, yes: 'Proposer' }))) return;
         try { await S.store.proposeSetup(f.other); toast(`Proposé à ${f.name}.`); showFriendMatch(); } catch (e) { toast(e.message); }
       }, 'chip')))
       : h('p', { class: 'small' }, 'Ajoute d’abord un ami (avec son e-mail).'),
@@ -835,7 +835,7 @@ function setupCard(x) {
   const head = h('div', { class: 'setup-head' }, h('strong', {}, `Avec ${x.friend}`),
     h('span', { class: `setup-st ${x.status}` }, { proposed: 'Proposé', accepted: 'En cours', dated: 'Date créé', cancelled: 'Annulé' }[x.status]));
   const body = [];
-  const bName = (n, st, mail) => (st === 'accepted' ? `${n || 'Ton ami'} a accepté ✓` : st === 'declined' ? `${mail || 'Ton ami'} a refusé` : st === 'invited' ? `Invitation envoyée à ${mail}` : 'Pas encore invité');
+  const bName = (n, st, mail) => (st === 'accepted' ? `${n || 'Ton ami'} a accepté ✓` : st === 'declined' ? `${mail || 'Ton ami'} a refusé` : st === 'invited' ? `Lien créé pour ${mail}, pas encore répondu` : 'Pas encore invité');
   if (x.status === 'proposed') {
     if (x.mine) body.push(status(`J’attends que ${x.friend} accepte.`, 'hourglass'), button('Annuler', async () => { await S.store.cancelSetup(x.id); showFriendMatch(); }, 'link'));
     else body.push(h('p', {}, `${x.friend} veut organiser un date avec toi : chacun présente un ami.`),
@@ -850,11 +850,12 @@ function setupCard(x) {
     if (x.my_b_status !== 'accepted') {
       let mail = x.my_email || '';
       body.push(
-        h('div', { class: 'field', style: { margin: '12px 0 8px' } }, h('input', { class: 'input', type: 'email', inputmode: 'email', autocapitalize: 'off', value: mail, placeholder: 'e-mail de l’ami que tu présentes', oninput: (e) => { mail = e.target.value; } })),
-        button(x.my_b_status === 'invited' ? 'Renvoyer l’invitation' : 'Inviter mon ami', async () => {
-          try { const tok = await S.store.inviteForSetup(x.id, mail.trim()); toast('Invitation créée.'); shareInvite(tok); showFriendMatch(); } catch (e) { toast(e.message); }
+        h('div', { class: 'field', style: { margin: '12px 0 8px' } }, h('input', { class: 'input', type: 'email', inputmode: 'email', autocapitalize: 'off', value: mail, placeholder: 'e-mail de l’ami que tu présentes (pour le reconnaître)', oninput: (e) => { mail = e.target.value; } })),
+        button(x.my_b_status === 'invited' ? 'Créer un nouveau lien' : 'Créer le lien d’invitation', async () => {
+          try { const tok = await S.store.inviteForSetup(x.id, mail.trim()); toast('Lien créé : envoie-le à ton ami.'); shareInvite(tok); showFriendMatch(); } catch (e) { toast(e.message); }
         }),
-        x.my_token && button('Partager le lien d’invitation', () => shareInvite(x.my_token), 'btn quiet'));
+        x.my_token && button('Envoyer le lien (WhatsApp, SMS…)', () => shareInvite(x.my_token), 'btn quiet'),
+        h('p', { class: 'small', style: { margin: '8px 0 0' } }, 'Aucun e-mail n’est envoyé : c’est toi qui envoies le lien. S’il a déjà l’appli avec cet e-mail, il voit aussi l’invitation dedans.'));
     }
     if (bothIn) {
       body.push(h('div', { class: 'section-label' }, 'Les fiches'),

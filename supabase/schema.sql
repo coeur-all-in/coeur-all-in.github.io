@@ -1034,7 +1034,8 @@ create table if not exists public.setups (
 alter table public.setups enable row level security;
 revoke all on public.setups from anon, authenticated;
 
--- E-mails à envoyer (par la fonction push, si un service d'envoi est configuré).
+-- E-mails d'invitation : non utilisés pour l'instant (les invitations passent par un lien à partager).
+-- La file reste prête si un service d'envoi est branché plus tard.
 create table if not exists public.mail_queue (
   id bigserial primary key,
   to_email text not null,
