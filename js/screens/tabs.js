@@ -108,11 +108,16 @@ export const chatOpensAt = (date) => date.dateAt - 3600e3;
 
 // Liste des conversations, une par ligne (comme WhatsApp / Insta).
 // rows : [{ id, name, preview, at, unread, locked, current }]
-export function chatListView(rows, onOpen) {
+export function chatListView(rows, onOpen, onDelete) {
   return [
     h('h1', { class: 'title', style: { fontSize: '40px', marginBottom: '18px' } }, 'Discussions'),
     rows.length
-      ? h('div', { class: 'convs' }, rows.map((r) => h('button', { class: `conv${r.unread ? ' unread' : ''}${r.current ? ' current' : ' old'}`, type: 'button', onclick: () => onOpen(r) },
+      ? h('div', { class: 'convs' }, rows.map((r) => h('button', { class: `conv${r.unread ? ' unread' : ''}${r.current ? ' current' : ' old'}`, type: 'button',
+        onclick: (e) => { if (e.currentTarget.dataset.held) { delete e.currentTarget.dataset.held; return; } onOpen(r); },
+        // Appui long sur une ancienne discussion : la supprimer.
+        onpointerdown: (e) => { if (!r.past || !onDelete) return; const el = e.currentTarget; el._t = setTimeout(() => { el.dataset.held = '1'; navigator.vibrate?.(20); onDelete(r); }, 550); },
+        onpointerup: (e) => clearTimeout(e.currentTarget._t), onpointerleave: (e) => clearTimeout(e.currentTarget._t), onpointercancel: (e) => clearTimeout(e.currentTarget._t),
+        oncontextmenu: (e) => { if (r.past) e.preventDefault(); } },
         avatar(r.name, r.current),
         h('div', { class: 'conv-main' },
           h('div', { class: 'conv-top' },
@@ -124,6 +129,7 @@ export function chatListView(rows, onOpen) {
       : h('div', { class: 'map-locked', style: { height: '220px' } }, icon('chat'),
         h('span', {}, 'Aucune discussion pour l’instant'),
         h('span', { class: 'small' }, 'Elle s’ouvre 1 h avant ton rendez-vous.')),
+    rows.some((r) => r.past) && onDelete && h('p', { class: 'small', style: { textAlign: 'center', marginTop: '14px' } }, 'Appui long sur une ancienne discussion pour la supprimer.'),
   ];
 }
 
@@ -172,7 +178,8 @@ export function threadView(o) {
     h('header', { class: 'thread-head' },
       h('button', { class: 'icon-btn', 'aria-label': 'Retour', onclick: o.onBack }, icon('back')),
       avatar(o.name, !!o.onSend),
-      h('div', { class: 'thread-who' }, h('div', { class: 'thread-name' }, o.name), h('div', { class: 'thread-sub' }, o.sub || ''))),
+      h('div', { class: 'thread-who' }, h('div', { class: 'thread-name' }, o.name), h('div', { class: 'thread-sub' }, o.sub || '')),
+      o.onDelete && h('button', { class: 'icon-btn thread-del', 'aria-label': 'Supprimer la discussion', onclick: o.onDelete }, icon('trash'))),
     list,
     bar);
 }

@@ -49,6 +49,7 @@ export async function createSupabaseStore() {
       id: row.id, a: row.a, b: row.b, score: row.score,
       createdAt: Date.parse(row.created_at), dateAt: Date.parse(row.date_at),
       objectives: row.objectives || {}, answers: byUser, status: 'active', demoOffset: row.demo_offset_ms ?? null,
+      setupId: row.setup_id || null, fiches: row.fiches || {},
     };
   }
 
@@ -145,49 +146,44 @@ export async function createSupabaseStore() {
       const row = check(await sb.from('profiles').select('data, active, gender, verified').eq('id', userId).maybeSingle());
       if (!row) return null;
       const { phone, ...data } = row.data || {}; // anciens profils : on ignore le numéro
-      // Le sexe vient de la vérification d'identité (colonne gérée par le serveur), jamais du formulaire.
-      return { ...data, gender: row.gender || null, verified: !!row.verified, id: userId, paused: row.active === false };
+      return { ...data, gender: row.gender || data.gender || null, verified: !!row.verified, id: userId, paused: row.active === false };
     },
 
     async saveProfile(p) {
-      const { phone, gender, verified, paused, id, ...data } = p; // sexe et vérification : gérés par le serveur
+      const { phone, verified, paused, id, ...data } = p; // la vérification est gérée par le serveur
       check(await sb.from('profiles').upsert({
-        id: userId, data, seeking: p.seeking, birthdate: p.birthdate,
+        id: userId, data, gender: p.gender || null, seeking: p.seeking, birthdate: p.birthdate,
         age_min: p.ageMin, age_max: p.ageMax, city: p.city, lat: p.lat ?? null, lng: p.lng ?? null,
         max_km: p.maxKm, availability: p.availability, active: p.paused !== true, updated_at: new Date().toISOString(),
       }));
       return { ...p, id: userId };
     },
 
-    // ---------- Vérification d'identité ----------
+    // ---------- Vérification du visage (rien n'est envoyé : seulement « réussi ») ----------
     async getVerification() {
       try { return check(await sb.rpc('my_verification')) || { status: 'none' }; } catch { return { status: 'none' }; }
     },
-    async submitVerification(doc, selfie) {
-      const stamp = Date.now();
-      const up = async (blob, name) => {
-        const path = `${userId}/${name}-${stamp}.jpg`;
-        check(await sb.storage.from('id-docs').upload(path, blob, { contentType: 'image/jpeg', upsert: true }));
-        return path;
-      };
-      const [docPath, selfiePath] = await Promise.all([up(doc, 'document'), up(selfie, 'selfie')]);
-      check(await sb.rpc('submit_verification', { p_doc: docPath, p_selfie: selfiePath }));
-      return { status: 'pending' };
-    },
-    async adminVerifications() {
-      return check(await sb.rpc('admin_verifications')) || [];
-    },
-    async adminVerifUrl(path) {
-      if (!path) return null;
-      const { data } = await sb.storage.from('id-docs').createSignedUrl(path, 600);
-      return data?.signedUrl || null;
-    },
-    async adminDecideVerification(user, ok, sex, note) {
-      const paths = check(await sb.rpc('admin_decide_verification', { p_user: user, p_ok: ok, p_sex: sex, p_note: note || null })) || [];
-      // Le document et le selfie sont supprimés dès la décision.
-      const list = paths.filter(Boolean);
-      if (list.length) await sb.storage.from('id-docs').remove(list).catch(() => {});
-    },
+    async completeLiveness() { check(await sb.rpc('complete_liveness')); },
+
+    // ---------- Amis ----------
+    async friends() { return check(await sb.rpc('my_friends')) || []; },
+    async addFriend(mail) { return check(await sb.rpc('friend_request', { p_email: mail })); },
+    async respondFriend(id, ok) { check(await sb.rpc('friend_respond', { p_id: id, p_ok: ok })); },
+    async removeFriend(id) { check(await sb.rpc('friend_remove', { p_id: id })); },
+
+    // ---------- « Je matche pour mon ami » ----------
+    async setups() { return check(await sb.rpc('my_setups')) || []; },
+    async proposeSetup(friend) { return check(await sb.rpc('setup_propose', { p_friend: friend })); },
+    async respondSetup(id, ok) { check(await sb.rpc('setup_respond', { p_id: id, p_ok: ok })); },
+    async cancelSetup(id) { check(await sb.rpc('setup_cancel', { p_id: id })); },
+    async inviteForSetup(id, mail) { return check(await sb.rpc('setup_invite', { p_id: id, p_email: mail })); },
+    async saveFiche(id, fiche) { return check(await sb.rpc('setup_fiche', { p_id: id, p_fiche: fiche })); },
+    async inviteInfo(token) { try { return check(await sb.rpc('invite_info', { p_token: token })); } catch { return null; } },
+    async respondInvite(token, ok) { check(await sb.rpc('invite_respond', { p_token: token, p_ok: ok })); },
+    async myInvites() { try { return check(await sb.rpc('my_invites')) || []; } catch { return []; } },
+
+    // ---------- Supprimer une discussion (définitif) ----------
+    async deleteChat(dateId) { check(await sb.rpc('delete_chat', { p_date: dateId })); },
 
     // ---------- Présence (pas de notification push quand l'appli est ouverte) ----------
     async presence(where) {
@@ -255,9 +251,9 @@ export async function createSupabaseStore() {
     },
     // Anciennes discussions : les dates passés ou refermés qui ont au moins un message.
     async getPastChats() {
-      const dates = check(await sb.from('dates').select('id,a,b,date_at').or(`a.eq.${userId},b.eq.${userId}`)
+      const dates = check(await sb.from('dates').select('id,a,b,date_at,chat_deleted_by').or(`a.eq.${userId},b.eq.${userId}`)
         .order('date_at', { ascending: false }).limit(50));
-      const past = dates.filter((d) => d.id !== currentDateId);
+      const past = dates.filter((d) => d.id !== currentDateId && !(d.chat_deleted_by || []).includes(userId));
       if (!past.length) return [];
       const ids = past.map((d) => d.id);
       const others = [...new Set(past.map((d) => (d.a === userId ? d.b : d.a)))];

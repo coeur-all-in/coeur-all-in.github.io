@@ -102,6 +102,7 @@ function db() {
     config: async () => (await call('push_config?id=eq.1&select=*'))[0],
     saveVapid: (v) => call('push_config?id=eq.1', { method: 'PATCH', body: JSON.stringify({ vapid_public: v.publicKey, vapid_private_jwk: v.privateJwk }) }),
     due: () => call('rpc/due_pushes', { method: 'POST', body: '{}' }),
+    mails: () => call('rpc/due_mails', { method: 'POST', body: '{}' }),
     subs: (ids) => call(`push_subscriptions?select=*&user_id=in.(${ids.join(',')})`),
     dropSub: (endpoint) => call(`push_subscriptions?endpoint=eq.${encodeURIComponent(endpoint)}`, { method: 'DELETE' }),
   };
@@ -118,8 +119,9 @@ async function handle(req) {
     await store.saveVapid(vapid);
   }
 
+  const mailed = await sendMails(store);
   const due = (await store.due()) || [];
-  if (!due.length) return Response.json({ sent: 0 });
+  if (!due.length) return Response.json({ sent: 0, mailed });
   const subs = await store.subs([...new Set(due.map((d) => d.user_id))]);
   let sent = 0;
   await Promise.all(due.flatMap((d) => subs.filter((s) => s.user_id === d.user_id).map(async (s) => {
@@ -131,7 +133,30 @@ async function handle(req) {
       console.error('push', e);
     }
   })));
-  return Response.json({ due: due.length, sent });
+  return Response.json({ due: due.length, sent, mailed });
+}
+
+// ---------- E-mails (invitations « Je matche pour mon ami ») ----------
+// Optionnel : avec un compte Brevo gratuit (300 e-mails/jour), ajoute dans Edge Functions → Secrets :
+//   BREVO_API_KEY = ta clé API Brevo     MAIL_FROM = l'adresse d'envoi validée dans Brevo
+// Sans ces secrets, aucun e-mail n'est envoyé : l'appli propose de partager le lien d'invitation.
+async function sendMails(store) {
+  const key = Deno.env.get('BREVO_API_KEY');
+  const from = Deno.env.get('MAIL_FROM');
+  if (!key || !from) return 0;
+  const list = (await store.mails()) || [];
+  let n = 0;
+  for (const m of list) {
+    try {
+      const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: { 'api-key': key, 'Content-Type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ sender: { email: from, name: 'Cœur All In' }, to: [{ email: m.to_email }], subject: m.subject, htmlContent: m.html }),
+      });
+      if (r.ok) n++; else console.error('mail', r.status, await r.text());
+    } catch (e) { console.error('mail', e); }
+  }
+  return n;
 }
 
 if (globalThis.Deno?.serve) {

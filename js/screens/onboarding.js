@@ -65,6 +65,7 @@ function steps(p) {
       render: () => [
         field('Ton prénom (c’est tout ce qu’on saura de ton nom)', text(() => p.firstName, (v) => { p.firstName = v; }, { placeholder: 'Marie', autocomplete: 'given-name', maxlength: 30 })),
         field('Ta date de naissance', text(() => p.birthdate, (v) => { p.birthdate = v; }, { type: 'date', max: new Date().toISOString().slice(0, 10) })),
+        field('Tu es', chips([{ id: 'homme', label: 'Un homme' }, { id: 'femme', label: 'Une femme' }], () => p.gender, (v) => { p.gender = v; })),
         field('Tu aimerais rencontrer', chips(SEEKING, () => p.seeking, (v) => { p.seeking = v; }, { multi: true })),
         h('div', { class: 'field' }, h('label', {}, 'Entre quel âge et quel âge ?'),
           h('div', { class: 'row2' },
@@ -75,6 +76,7 @@ function steps(p) {
         if (!p.firstName?.trim()) return 'Ton prénom, s’il te plaît.';
         if (!p.birthdate) return 'Ta date de naissance est nécessaire.';
         if (age(p.birthdate) < 18) return 'Cœur All In est réservé aux personnes majeures.';
+        if (p.gender !== 'homme' && p.gender !== 'femme') return 'Dis-moi si tu es un homme ou une femme.';
         if (!p.seeking?.length) return 'Dis-moi qui tu aimerais rencontrer.';
         if (!(p.ageMin >= 18 && p.ageMax >= p.ageMin)) return 'La tranche d’âge ne va pas (18 ans minimum).';
         return null;
@@ -260,9 +262,11 @@ export function defaults(existing) {
 }
 
 // Monte l'assistant dans `root`. onDone(profile) est appelé à la fin.
-export function onboarding(root, { initial, onDone, onCancel, startStep = 0 }) {
+// short : version courte pour une personne invitée par un ami (son ami écrit sa fiche à sa place).
+export function onboarding(root, { initial, onDone, onCancel, startStep = 0, short = false }) {
   const p = defaults(initial);
-  const all = steps(p);
+  const full = steps(p);
+  const all = short ? [full[0], full[1], full[full.length - 1]] : full;
   let i = startStep;
 
   const render = () => {

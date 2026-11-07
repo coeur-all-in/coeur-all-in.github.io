@@ -10,7 +10,7 @@ create extension if not exists pgcrypto;
 create table if not exists public.profiles (
   id uuid primary key references auth.users on delete cascade,
   data jsonb not null,                     -- profil complet (prénom, physique, caractère…)
-  gender text,                             -- sexe inscrit sur la pièce d'identité (rempli à la vérification)
+  gender text,                             -- homme / femme (questionnaire)
   seeking text[] not null,
   birthdate date not null,
   age_min int not null default 18,
@@ -55,7 +55,7 @@ create table if not exists public.reports (
   created_at timestamptz not null default now()
 );
 
--- Le sexe vient de la vérification d'identité (plus demandé dans le questionnaire).
+-- verified : vérification du visage faite (la personne a tourné la tête devant la caméra).
 alter table public.profiles alter column gender drop not null;
 alter table public.profiles add column if not exists verified boolean not null default false;
 -- Présence : tant que l'appli est ouverte, pas de notification push (bannière dans l'appli à la place).
@@ -236,6 +236,7 @@ declare
 begin
   select * into me from profiles where id = uid for update skip locked;
   if me.id is null or not me.active or not me.verified or me.gender is null or me.searching_since is null or public.is_busy(uid) then return null; end if;
+  if public.in_pending_setup(uid) then return null; end if;
   ml := public.search_level(me.searching_since);
 
   select p.id, p.availability, x.sc into cand
@@ -259,6 +260,7 @@ begin
     and (x.lv >= 2 or me.availability && p.availability)
     and not exists (select 1 from dates d where (d.a = me.id and d.b = p.id) or (d.a = p.id and d.b = me.id))
     and not public.is_busy(p.id)
+    and not public.in_pending_setup(p.id)
   order by x.sc desc, p.searching_since asc
   limit 1
   for update of p skip locked;
@@ -306,6 +308,7 @@ begin
   if existing is not null then return jsonb_build_object('date_id', existing); end if;
 
   if not me.verified then return jsonb_build_object('date_id', null, 'verify', true); end if;
+  if public.in_pending_setup(me.id) then return jsonb_build_object('date_id', null, 'setup_pending', true); end if;
   update profiles set last_seen = now(), searching_since = coalesce(searching_since, now()) where id = me.id;
   if not me.active then return jsonb_build_object('date_id', null, 'paused', true); end if;
 
@@ -387,11 +390,11 @@ create policy "profil: modifier le sien" on public.profiles for update using (id
 drop policy if exists "profil: supprimer le sien" on public.profiles;
 create policy "profil: supprimer le sien" on public.profiles for delete using (id = auth.uid());
 
--- Le sexe, la vérification et la présence ne s'écrivent jamais depuis l'appli (seulement par le serveur).
+-- La vérification (visage) et la présence ne s'écrivent jamais directement depuis l'appli.
 revoke insert, update on public.profiles from anon, authenticated;
-grant insert (id, data, seeking, birthdate, age_min, age_max, city, lat, lng, max_km, availability, active, updated_at)
+grant insert (id, data, gender, seeking, birthdate, age_min, age_max, city, lat, lng, max_km, availability, active, updated_at)
   on public.profiles to authenticated;
-grant update (id, data, seeking, birthdate, age_min, age_max, city, lat, lng, max_km, availability, active, updated_at)
+grant update (id, data, gender, seeking, birthdate, age_min, age_max, city, lat, lng, max_km, availability, active, updated_at)
   on public.profiles to authenticated;
 
 drop policy if exists "date: participants" on public.dates;
@@ -877,102 +880,386 @@ end $$;
 revoke all on function public.admin_test_push() from public, anon;
 grant execute on function public.admin_test_push() to authenticated;
 
--- ================================================================ Vérification d'identité
--- Chaque personne envoie une photo de sa pièce d'identité + un selfie (stockage privé « id-docs »).
--- Un admin compare, indique le sexe inscrit sur le document, valide ou refuse. Les photos sont alors supprimées.
-create table if not exists public.verifications (
-  user_id uuid primary key references auth.users on delete cascade,
-  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
-  sex text check (sex in ('homme', 'femme')),
-  doc_path text,
-  selfie_path text,
-  note text,
-  submitted_at timestamptz not null default now(),
-  decided_at timestamptz
-);
-alter table public.verifications enable row level security;
-revoke all on public.verifications from anon, authenticated;
+-- ================================================================ Vérification « vraie personne »
+-- L'appli allume la caméra et demande de tourner la tête (haut, droite, gauche). Tout se passe sur le
+-- téléphone : aucune photo ni vidéo n'est envoyée ni stockée. Quand c'est réussi, l'appli le signale ici.
+-- (Anciennes vérifications par pièce d'identité : supprimées.)
+drop function if exists public.admin_verifications();
+drop function if exists public.admin_decide_verification(uuid, boolean, text, text);
+drop function if exists public.submit_verification(text, text);
+drop table if exists public.verifications;
+
+create or replace function public.complete_liveness() returns void
+language sql security definer set search_path = public as $$
+  update profiles set verified = true where id = auth.uid()
+$$;
+revoke all on function public.complete_liveness() from public, anon;
+grant execute on function public.complete_liveness() to authenticated;
 
 create or replace function public.my_verification() returns jsonb
 language sql stable security definer set search_path = public as $$
-  select coalesce(
-    (select jsonb_build_object('status', v.status, 'note', v.note) from verifications v where v.user_id = auth.uid()),
-    case when (select verified from profiles where id = auth.uid()) then jsonb_build_object('status', 'approved')
-         else jsonb_build_object('status', 'none') end)
+  select jsonb_build_object('status', case when coalesce((select verified from profiles where id = auth.uid()), false) then 'approved' else 'none' end)
 $$;
 revoke all on function public.my_verification() from public, anon;
 grant execute on function public.my_verification() to authenticated;
 
-create or replace function public.submit_verification(p_doc text, p_selfie text) returns void
+-- ================================================================ Supprimer une discussion
+-- Chacun peut supprimer une ancienne discussion de son côté, définitivement.
+-- Quand les deux l'ont supprimée, les messages sont effacés de la base.
+alter table public.dates add column if not exists chat_deleted_by uuid[] not null default '{}';
+create or replace function public.delete_chat(p_date uuid) returns void
 language plpgsql security definer set search_path = public as $$
+declare d dates;
 begin
-  if auth.uid() is null then raise exception 'Connexion requise'; end if;
-  if split_part(p_doc, '/', 1) <> auth.uid()::text or split_part(p_selfie, '/', 1) <> auth.uid()::text then
-    raise exception 'Chemin invalide';
+  select * into d from dates where id = p_date and auth.uid() in (a, b);
+  if d.id is null then raise exception 'Discussion introuvable'; end if;
+  update dates set chat_deleted_by = array(select distinct unnest(chat_deleted_by || auth.uid())) where id = p_date
+  returning * into d;
+  if d.a = any(d.chat_deleted_by) and d.b = any(d.chat_deleted_by) then
+    delete from messages where date_id = p_date;
   end if;
-  insert into verifications (user_id, status, doc_path, selfie_path, submitted_at, note, sex, decided_at)
-  values (auth.uid(), 'pending', p_doc, p_selfie, now(), null, null, null)
-  on conflict (user_id) do update set status = 'pending', doc_path = excluded.doc_path, selfie_path = excluded.selfie_path,
-    submitted_at = now(), note = null, sex = null, decided_at = null
-  where verifications.status <> 'approved';
 end $$;
-revoke all on function public.submit_verification(text, text) from public, anon;
-grant execute on function public.submit_verification(text, text) to authenticated;
+revoke all on function public.delete_chat(uuid) from public, anon;
+grant execute on function public.delete_chat(uuid) to authenticated;
+-- Les messages d'une discussion supprimée de mon côté ne me sont plus montrés.
+drop policy if exists "messages: lire ceux de son date" on public.messages;
+create policy "messages: lire ceux de son date" on public.messages for select using (
+  public.in_date(date_id)
+  and not exists (select 1 from dates d where d.id = messages.date_id and auth.uid() = any(d.chat_deleted_by)));
 
-drop function if exists public.admin_verifications();
-create or replace function public.admin_verifications()
-returns table (user_id uuid, first_name text, birthdate date, email text, city text, doc_path text, selfie_path text, submitted_at timestamptz)
+-- ================================================================ Amis
+create table if not exists public.friendships (
+  id bigserial primary key,
+  requester uuid not null references auth.users on delete cascade,
+  addressee uuid not null references auth.users on delete cascade,
+  status text not null default 'pending' check (status in ('pending', 'accepted')),
+  created_at timestamptz not null default now(),
+  check (requester <> addressee)
+);
+create unique index if not exists friendships_pair_idx on public.friendships (least(requester, addressee), greatest(requester, addressee));
+alter table public.friendships enable row level security;
+revoke all on public.friendships from anon, authenticated;
+
+create or replace function public.is_friend(other uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select v.user_id, p.data->>'firstName', p.birthdate, u.email::text, p.city, v.doc_path, v.selfie_path, v.submitted_at
-  from verifications v
-  join auth.users u on u.id = v.user_id
-  left join profiles p on p.id = v.user_id
-  where public.is_admin() and v.status = 'pending'
-  order by v.submitted_at
+  select exists (select 1 from friendships f where f.status = 'accepted'
+    and ((f.requester = auth.uid() and f.addressee = other) or (f.addressee = auth.uid() and f.requester = other)))
 $$;
-revoke all on function public.admin_verifications() from public, anon;
-grant execute on function public.admin_verifications() to authenticated;
 
--- Décision de l'admin. Renvoie les chemins des photos, que l'appli supprime aussitôt du stockage.
-create or replace function public.admin_decide_verification(p_user uuid, p_ok boolean, p_sex text, p_note text) returns text[]
+-- Ajouter un ami par son e-mail.
+create or replace function public.friend_request(p_email text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
-  paths text[];
+  me uuid := auth.uid();
+  other uuid;
+  oname text;
+  f friendships;
 begin
-  if not public.is_admin() then raise exception 'Réservé aux admins'; end if;
-  if p_ok and p_sex not in ('homme', 'femme') then raise exception 'Sexe manquant'; end if;
-  select array[doc_path, selfie_path] into paths from verifications where user_id = p_user;
-  update verifications set status = case when p_ok then 'approved' else 'rejected' end,
-    sex = case when p_ok then p_sex end, note = p_note, decided_at = now(), doc_path = null, selfie_path = null
-  where user_id = p_user;
-  if p_ok then
-    update profiles set gender = p_sex, verified = true where id = p_user;
-    insert into push_queue (user_id, body) values (p_user, 'Ton identité est vérifiée ✓ Je commence à te chercher quelqu’un.');
-  else
-    update profiles set verified = false where id = p_user;
-    insert into push_queue (user_id, body) values (p_user, 'Ta vérification d’identité n’a pas pu être validée. Ouvre l’appli pour renvoyer tes photos.');
+  if me is null then raise exception 'Connexion requise'; end if;
+  select u.id into other from auth.users u where lower(u.email) = lower(trim(p_email)) limit 1;
+  if other is null then return jsonb_build_object('status', 'notfound'); end if;
+  if other = me then return jsonb_build_object('status', 'self'); end if;
+  oname := coalesce((select data->>'firstName' from profiles where id = other), split_part(p_email, '@', 1));
+  select * into f from friendships where least(requester, addressee) = least(me, other) and greatest(requester, addressee) = greatest(me, other);
+  if f.id is not null then
+    if f.status = 'accepted' then return jsonb_build_object('status', 'already', 'name', oname); end if;
+    if f.addressee = me then  -- l'autre m'avait déjà demandé : on devient amis
+      update friendships set status = 'accepted' where id = f.id;
+      insert into push_queue (user_id, body) values (other, coalesce((select data->>'firstName' from profiles where id = me), 'Quelqu’un') || ' a accepté ta demande d’ami.');
+      return jsonb_build_object('status', 'accepted', 'name', oname);
+    end if;
+    return jsonb_build_object('status', 'pending', 'name', oname);
   end if;
-  return coalesce(paths, '{}');
+  insert into friendships (requester, addressee) values (me, other);
+  insert into push_queue (user_id, body) values (other, coalesce((select data->>'firstName' from profiles where id = me), 'Quelqu’un') || ' veut t’ajouter en ami sur Cœur All In.');
+  return jsonb_build_object('status', 'sent', 'name', oname);
 end $$;
-revoke all on function public.admin_decide_verification(uuid, boolean, text, text) from public, anon;
-grant execute on function public.admin_decide_verification(uuid, boolean, text, text) to authenticated;
 
--- Stockage privé des documents : chacun dépose dans son dossier ; seuls les admins peuvent les lire.
-do $$
+create or replace function public.friend_respond(p_id bigint, p_ok boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare f friendships;
 begin
-  insert into storage.buckets (id, name, public) values ('id-docs', 'id-docs', false) on conflict (id) do nothing;
-  drop policy if exists "id-docs: déposer les siens" on storage.objects;
-  create policy "id-docs: déposer les siens" on storage.objects for insert to authenticated
-    with check (bucket_id = 'id-docs' and (storage.foldername(name))[1] = auth.uid()::text);
-  drop policy if exists "id-docs: remplacer les siens" on storage.objects;
-  create policy "id-docs: remplacer les siens" on storage.objects for update to authenticated
-    using (bucket_id = 'id-docs' and (storage.foldername(name))[1] = auth.uid()::text);
-  drop policy if exists "id-docs: lire (soi ou admin)" on storage.objects;
-  create policy "id-docs: lire (soi ou admin)" on storage.objects for select to authenticated
-    using (bucket_id = 'id-docs' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin()));
-  drop policy if exists "id-docs: supprimer (soi ou admin)" on storage.objects;
-  create policy "id-docs: supprimer (soi ou admin)" on storage.objects for delete to authenticated
-    using (bucket_id = 'id-docs' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin()));
-exception when others then
-  raise notice 'Stockage indisponible (%). La vérification d’identité ne pourra pas recevoir de photos.', sqlerrm;
+  select * into f from friendships where id = p_id and addressee = auth.uid() and status = 'pending';
+  if f.id is null then raise exception 'Demande introuvable'; end if;
+  if p_ok then
+    update friendships set status = 'accepted' where id = p_id;
+    insert into push_queue (user_id, body) values (f.requester, coalesce((select data->>'firstName' from profiles where id = auth.uid()), 'Quelqu’un') || ' a accepté ta demande d’ami.');
+  else
+    delete from friendships where id = p_id;
+  end if;
 end $$;
+
+create or replace function public.friend_remove(p_id bigint) returns void
+language sql security definer set search_path = public as $$
+  delete from friendships where id = p_id and auth.uid() in (requester, addressee)
+$$;
+
+drop function if exists public.my_friends();
+create or replace function public.my_friends()
+returns table (id bigint, other uuid, name text, email text, status text, incoming boolean)
+language sql stable security definer set search_path = public as $$
+  select f.id, o.id, coalesce(p.data->>'firstName', split_part(u.email, '@', 1)), u.email::text, f.status, f.addressee = auth.uid()
+  from friendships f
+  cross join lateral (select case when f.requester = auth.uid() then f.addressee else f.requester end as id) o
+  join auth.users u on u.id = o.id
+  left join profiles p on p.id = o.id
+  where auth.uid() in (f.requester, f.addressee)
+  order by f.status desc, f.created_at desc
+$$;
+
+-- ================================================================ « Je matche pour mon ami »
+-- A1 et A2 (amis dans l'appli) se choisissent. A1 invite son ami B1 (e-mail), A2 invite B2.
+-- Si B1 et B2 acceptent, A1 écrit la fiche de B1 et A2 celle de B2 (A1 voit la fiche de B2, A2 celle de B1).
+-- Puis un date normal est créé entre B1 et B2, qui ne savent pas qui est l'autre.
+alter table public.dates add column if not exists setup_id uuid;
+alter table public.dates add column if not exists fiches jsonb not null default '{}';
+
+create table if not exists public.setups (
+  id uuid primary key default gen_random_uuid(),
+  a1 uuid not null references auth.users on delete cascade,
+  a2 uuid not null references auth.users on delete cascade,
+  status text not null default 'proposed' check (status in ('proposed', 'accepted', 'dated', 'cancelled')),
+  b1_email text, b2_email text,
+  b1 uuid references auth.users on delete set null,
+  b2 uuid references auth.users on delete set null,
+  b1_token text unique, b2_token text unique,
+  b1_status text check (b1_status in ('invited', 'accepted', 'declined')),
+  b2_status text check (b2_status in ('invited', 'accepted', 'declined')),
+  fiche1 jsonb, fiche2 jsonb,
+  date_id uuid references public.dates on delete set null,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.setups enable row level security;
+revoke all on public.setups from anon, authenticated;
+
+-- E-mails à envoyer (par la fonction push, si un service d'envoi est configuré).
+create table if not exists public.mail_queue (
+  id bigserial primary key,
+  to_email text not null,
+  subject text not null,
+  html text not null,
+  created_at timestamptz not null default now(),
+  sent_at timestamptz
+);
+alter table public.mail_queue enable row level security;
+revoke all on public.mail_queue from anon, authenticated;
+
+create or replace function public.first_name(uid uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce((select data->>'firstName' from profiles where id = uid), 'Quelqu’un')
+$$;
+
+create or replace function public.setup_propose(p_friend uuid) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare new_id uuid;
+begin
+  if not public.is_friend(p_friend) then raise exception 'Ajoute d’abord cette personne en ami.'; end if;
+  if exists (select 1 from setups where status in ('proposed', 'accepted')
+             and ((a1 = auth.uid() and a2 = p_friend) or (a1 = p_friend and a2 = auth.uid()))) then
+    raise exception 'Vous avez déjà un match en préparation tous les deux.';
+  end if;
+  insert into setups (a1, a2) values (auth.uid(), p_friend) returning id into new_id;
+  insert into push_queue (user_id, body) values (p_friend, public.first_name(auth.uid()) || ' veut organiser un date avec toi : chacun présente un ami. Ouvre l’appli.');
+  return new_id;
+end $$;
+
+create or replace function public.setup_respond(p_id uuid, p_ok boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare s setups;
+begin
+  select * into s from setups where id = p_id and a2 = auth.uid() and status = 'proposed';
+  if s.id is null then raise exception 'Proposition introuvable'; end if;
+  update setups set status = case when p_ok then 'accepted' else 'cancelled' end, updated_at = now() where id = p_id;
+  insert into push_queue (user_id, body) values (s.a1, public.first_name(auth.uid()) ||
+    case when p_ok then ' est partant·e : invite maintenant ton ami à rencontrer le sien.' else ' ne peut pas pour ce match.' end);
+end $$;
+
+create or replace function public.setup_cancel(p_id uuid) returns void
+language sql security definer set search_path = public as $$
+  update setups set status = 'cancelled', updated_at = now()
+  where id = p_id and auth.uid() in (a1, a2) and status in ('proposed', 'accepted')
+$$;
+
+-- A invite son ami B par e-mail. Renvoie le jeton du lien d'invitation (à partager aussi par message).
+create or replace function public.setup_invite(p_id uuid, p_email text) returns text
+language plpgsql security definer set search_path = public as $$
+declare
+  s setups;
+  side int;
+  tok text := encode(gen_random_bytes(18), 'hex');
+  mail text := lower(trim(p_email));
+  bid uuid;
+  link text;
+  mname text := public.first_name(auth.uid());
+begin
+  select * into s from setups where id = p_id and status = 'accepted' and auth.uid() in (a1, a2);
+  if s.id is null then raise exception 'Match introuvable'; end if;
+  if mail !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'Adresse e-mail invalide.'; end if;
+  side := case when s.a1 = auth.uid() then 1 else 2 end;
+  if (side = 1 and s.b1_status = 'accepted') or (side = 2 and s.b2_status = 'accepted') then raise exception 'Ton ami a déjà accepté.'; end if;
+  select id into bid from auth.users where lower(email) = mail;
+  if bid in (s.a1, s.a2) then raise exception 'Invite quelqu’un d’autre que vous deux.'; end if;
+  if side = 1 then update setups set b1_email = mail, b1_token = tok, b1_status = 'invited', b1 = null, updated_at = now() where id = p_id;
+  else update setups set b2_email = mail, b2_token = tok, b2_status = 'invited', b2 = null, updated_at = now() where id = p_id; end if;
+  link := 'https://coeur-all-in.github.io/?invite=' || tok;
+  insert into mail_queue (to_email, subject, html) values (mail, mname || ' veut te présenter quelqu’un',
+    '<p>Salut,</p><p><b>' || mname || '</b> pense à toi : avec un ami, ils veulent vous présenter l’un à l’autre sur <b>Cœur All In</b>, '
+    || 'un rendez-vous sans photo, guidé par des cartes et des jeux.</p><p><a href="' || link || '">Voir la proposition</a></p>'
+    || '<p>Si tu acceptes, il te faudra l’appli (gratuite, elle s’installe depuis ce lien).</p>');
+  if bid is not null then insert into push_queue (user_id, body) values (bid, mname || ' veut te présenter quelqu’un. Ouvre l’appli.'); end if;
+  return tok;
+end $$;
+
+-- Ce qu'une invitation montre (même sans compte) : seulement qui t'invite.
+create or replace function public.invite_info(p_token text) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('from', public.first_name(case when s.b1_token = p_token then s.a1 else s.a2 end),
+    'status', case when s.status = 'cancelled' then 'cancelled'
+                   when s.b1_token = p_token then coalesce(s.b1_status, 'invited') else coalesce(s.b2_status, 'invited') end)
+  from setups s where p_token is not null and (s.b1_token = p_token or s.b2_token = p_token)
+$$;
+
+create or replace function public.invite_respond(p_token text, p_ok boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  s setups;
+  side int;
+  me uuid := auth.uid();
+begin
+  if me is null then raise exception 'Crée d’abord ton compte.'; end if;
+  select * into s from setups where (b1_token = p_token or b2_token = p_token) and status = 'accepted';
+  if s.id is null then raise exception 'Invitation expirée.'; end if;
+  side := case when s.b1_token = p_token then 1 else 2 end;
+  if me in (s.a1, s.a2) or me is not distinct from (select case when side = 1 then s.b2 else s.b1 end) then raise exception 'Cette invitation est pour quelqu’un d’autre.'; end if;
+  if p_ok and not exists (select 1 from profiles where id = me) then raise exception 'Termine d’abord ton portrait.'; end if;
+  if p_ok and not coalesce((select verified from profiles where id = me), false) then raise exception 'Fais d’abord la vérification du visage.'; end if;
+  if side = 1 then update setups set b1 = case when p_ok then me end, b1_status = case when p_ok then 'accepted' else 'declined' end, updated_at = now() where id = s.id;
+  else update setups set b2 = case when p_ok then me end, b2_status = case when p_ok then 'accepted' else 'declined' end, updated_at = now() where id = s.id; end if;
+  insert into push_queue (user_id, body) values (case when side = 1 then s.a1 else s.a2 end,
+    public.first_name(me) || case when p_ok then ' a accepté ! Écris sa fiche dès que l’autre accepte aussi.' else ' a refusé. Tu peux inviter quelqu’un d’autre.' end);
+  select * into s from setups where id = s.id;
+  if s.b1_status = 'accepted' and s.b2_status = 'accepted' then
+    insert into push_queue (user_id, body) values (s.a1, 'Les deux ont accepté : écris la fiche de ' || public.first_name(s.b1) || '.'),
+                                                  (s.a2, 'Les deux ont accepté : écris la fiche de ' || public.first_name(s.b2) || '.');
+  end if;
+end $$;
+
+-- Invitations reçues dans l'appli (par e-mail du compte).
+drop function if exists public.my_invites();
+create or replace function public.my_invites() returns table (token text, from_name text)
+language sql stable security definer set search_path = public as $$
+  select case when lower(s.b1_email) = lower(u.email) then s.b1_token else s.b2_token end,
+         public.first_name(case when lower(s.b1_email) = lower(u.email) then s.a1 else s.a2 end)
+  from setups s join auth.users u on u.id = auth.uid()
+  where s.status = 'accepted'
+    and ((lower(s.b1_email) = lower(u.email) and s.b1_status = 'invited') or (lower(s.b2_email) = lower(u.email) and s.b2_status = 'invited'))
+$$;
+
+-- A écrit la fiche de son ami. Quand les deux fiches sont là, le date est créé.
+create or replace function public.setup_fiche(p_id uuid, p_fiche jsonb) returns text
+language plpgsql security definer set search_path = public as $$
+declare
+  s setups;
+  side int;
+  common int[];
+  d_day date;
+  objs text[] := array['vingt', 'souvenir', 'fourire', 'chanson', 'ailleurs', 'fierte', 'enfant', 'plat'];
+  i int := 1 + floor(random() * 8)::int;
+  j int := 1 + floor(random() * 7)::int;
+  new_id uuid;
+  paris_today date := (now() at time zone 'Europe/Paris')::date;
+begin
+  select * into s from setups where id = p_id and auth.uid() in (a1, a2) and status = 'accepted';
+  if s.id is null then raise exception 'Match introuvable'; end if;
+  if s.b1_status is distinct from 'accepted' or s.b2_status is distinct from 'accepted' then raise exception 'Les deux amis doivent d’abord accepter.'; end if;
+  side := case when s.a1 = auth.uid() then 1 else 2 end;
+  if side = 1 then update setups set fiche1 = p_fiche, updated_at = now() where id = p_id;
+  else update setups set fiche2 = p_fiche, updated_at = now() where id = p_id; end if;
+  select * into s from setups where id = p_id;
+  if s.fiche1 is null or s.fiche2 is null then
+    insert into push_queue (user_id, body) values (case when side = 1 then s.a2 else s.a1 end,
+      public.first_name(auth.uid()) || ' a écrit sa fiche. À toi d’écrire celle de ton ami.');
+    return 'waiting';
+  end if;
+  if public.is_busy(s.b1) or public.is_busy(s.b2) then
+    update setups set note = 'busy' where id = p_id;
+    return 'busy';
+  end if;
+  -- Jour du date : jeudi, vendredi ou samedi communs, au moins 3 jours après, 20h (Paris).
+  select array_agg(x) into common from unnest(array[6, 5, 4]) x
+  where x = any(coalesce((select availability from profiles where id = s.b1), '{6,5,4}'))
+    and x = any(coalesce((select availability from profiles where id = s.b2), '{6,5,4}'));
+  if common is null then common := array[6]; end if;
+  for k in 3..16 loop
+    d_day := paris_today + k;
+    exit when extract(dow from d_day)::int = any(common);
+  end loop;
+  if j >= i then j := j + 1; end if;
+  insert into dates (a, b, date_at, objectives, setup_id, fiches)
+  values (s.b1, s.b2, (d_day + time '20:00') at time zone 'Europe/Paris',
+          jsonb_build_object(s.b1::text, objs[i], s.b2::text, objs[j]), s.id,
+          jsonb_build_object(s.b1::text, s.fiche1, s.b2::text, s.fiche2))
+  returning id into new_id;
+  update setups set status = 'dated', date_id = new_id, note = null, updated_at = now() where id = p_id;
+  update profiles set searching_since = null where id in (s.b1, s.b2);
+  insert into push_queue (user_id, body) values (s.a1, 'Le date est créé ! Tes deux amis viennent de recevoir leur première carte.'),
+                                                (s.a2, 'Le date est créé ! Tes deux amis viennent de recevoir leur première carte.');
+  return 'dated';
+end $$;
+
+-- Tout ce que voit un organisateur (A) de ses matchs pour amis.
+-- Chacun voit la fiche de son ami ET celle de l'autre ami. Jamais l'e-mail de l'autre ami.
+create or replace function public.my_setups() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(x order by x->>'updated' desc), '[]'::jsonb) from (
+    select jsonb_build_object(
+      'id', s.id, 'status', s.status, 'note', s.note, 'updated', s.updated_at,
+      'side', case when s.a1 = auth.uid() then 1 else 2 end,
+      'mine', s.a1 = auth.uid(),
+      'friend', public.first_name(case when s.a1 = auth.uid() then s.a2 else s.a1 end),
+      'my_email', case when s.a1 = auth.uid() then s.b1_email else s.b2_email end,
+      'my_token', case when s.a1 = auth.uid() then s.b1_token else s.b2_token end,
+      'my_b_status', case when s.a1 = auth.uid() then s.b1_status else s.b2_status end,
+      'their_b_status', case when s.a1 = auth.uid() then s.b2_status else s.b1_status end,
+      'my_b_name', case when (case when s.a1 = auth.uid() then s.b1 else s.b2 end) is not null then public.first_name(case when s.a1 = auth.uid() then s.b1 else s.b2 end) end,
+      'their_b_name', case when (case when s.a1 = auth.uid() then s.b2 else s.b1 end) is not null then public.first_name(case when s.a1 = auth.uid() then s.b2 else s.b1 end) end,
+      'my_fiche', case when s.a1 = auth.uid() then s.fiche1 else s.fiche2 end,
+      'their_fiche', case when s.a1 = auth.uid() then s.fiche2 else s.fiche1 end,
+      'date_at', (select date_at from dates where id = s.date_id)
+    ) as x
+    from setups s where auth.uid() in (s.a1, s.a2) and s.updated_at > now() - interval '30 days'
+  ) t
+$$;
+
+-- E-mails à envoyer (appelée par la fonction push).
+create or replace function public.due_mails() returns table (id bigint, to_email text, subject text, html text)
+language sql security definer set search_path = public as $$
+  update mail_queue set sent_at = now()
+  where mail_queue.id in (select q.id from mail_queue q where q.sent_at is null and q.created_at > now() - interval '1 day' limit 20)
+  returning mail_queue.id, mail_queue.to_email, mail_queue.subject, mail_queue.html
+$$;
+revoke all on function public.due_mails() from public, anon, authenticated;
+drop trigger if exists mail_kick on public.mail_queue;
+create trigger mail_kick after insert on public.mail_queue for each row execute function public.trg_kick_push();
+
+do $$
+declare f text;
+begin
+  foreach f in array array['friend_request(text)', 'friend_respond(bigint, boolean)', 'friend_remove(bigint)', 'my_friends()',
+    'setup_propose(uuid)', 'setup_respond(uuid, boolean)', 'setup_cancel(uuid)', 'setup_invite(uuid, text)',
+    'invite_respond(text, boolean)', 'my_invites()', 'setup_fiche(uuid, jsonb)', 'my_setups()'] loop
+    execute format('revoke all on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;
+grant execute on function public.invite_info(text) to anon, authenticated;
+
+-- Une personne invitée qui a accepté un match organisé par ses amis attend ce date :
+-- elle n'entre pas dans la recherche aléatoire en attendant.
+create or replace function public.in_pending_setup(uid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from setups s where s.status = 'accepted'
+    and ((s.b1 = uid and s.b1_status = 'accepted') or (s.b2 = uid and s.b2_status = 'accepted')))
+$$;

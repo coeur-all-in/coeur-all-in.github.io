@@ -76,11 +76,15 @@ export function createLocalStore() {
       if (!s.userId) { s.userId = 'me-' + uid(); s.dates = []; save(s); }
       return { userId: s.userId };
     },
-    async getProfile() { return s.profile ? { ...s.profile, verified: !!s.verif?.ok, gender: s.verif?.sex || s.profile.gender || null } : null; },
-    // Vérification d'identité simulée (mode solo) : validée tout de suite.
+    async getProfile() { return s.profile ? { ...s.profile, verified: !!s.verif?.ok } : null; },
+    // Vérification du visage (mode solo).
     async getVerification() { return s.verif?.ok ? { status: 'approved' } : { status: 'none' }; },
-    async submitVerification(doc, selfie, sex) { s.verif = { ok: true, sex: sex || 'homme' }; save(s); return { status: 'approved' }; },
-    async adminVerifications() { return []; },
+    async completeLiveness() { s.verif = { ok: true }; save(s); },
+    // Amis et « je matche pour mon ami » : seulement en ligne (il faut de vrais comptes).
+    async friends() { return []; },
+    async setups() { return []; },
+    async myInvites() { return []; },
+    async deleteChat(dateId) { s.dates = (s.dates || []).map((d) => (d.id === dateId ? { ...d, messages: [] } : d)); save(s); },
     async presence() {},
     subscribe() {},
     async isAdmin() { return true; }, // en solo, tout est permis (tests)
@@ -103,7 +107,7 @@ export function createLocalStore() {
 
     async findMatch() {
       if (!s.verif?.ok) return { search: { verify: 'none' } };
-      const me = { ...s.profile, gender: s.verif.sex };
+      const me = s.profile;
       const exclude = (s.dates || []).map((d) => d.b);
       const candidates = pool(me);
       let best = bestMatch(me, candidates, exclude);

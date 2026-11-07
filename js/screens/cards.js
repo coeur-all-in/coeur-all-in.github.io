@@ -140,11 +140,16 @@ export const CARDS = {
         }, 'link'),
       ];
     }
+    const f = c.partner.fiche;
     return card({
-      eyebrow: 'Quelqu’un a pensé à toi',
+      eyebrow: f ? 'Un ami a pensé à toi' : 'Quelqu’un a pensé à toi',
       title: c.partner.firstName,
       meta: dateMeta(c),
       body: [c.portrait],
+      sections: f ? [
+        f.said && { label: `Ce que son ami dit d’${P.lui === 'lui' ? 'lui' : P.lui}`, italic: true, text: `« ${f.said} »` },
+        { label: 'Présenté par vos amis', text: h('p', { class: 'small' }, `Ton ami et le sien vous ont choisis l’un pour l’autre. Tu ne sauras pas qui ${P.il} est avant le rendez-vous.`) },
+      ].filter(Boolean) : [],
       items: ['Pas de photo, pas de nom', `Le lieu se révèle ${veille}`, 'Quatre jeux dans la soirée, avec des points', 'Un objectif secret, rien qu’à toi'],
       actions,
     });
@@ -248,10 +253,11 @@ export const CARDS = {
           `Tiré au sort entre ${mineP.name} et ${theirP.name} · revoir le tirage`),
       ],
       sections: [
+        c.partner.fiche?.looks && { label: 'Selon son ami', italic: true, text: `« ${c.partner.fiche.looks} »` },
         { label: `Pour ${P.le} reconnaître`, text: t.lookout ? h('blockquote', { class: 'quote small-quote' }, `« ${t.lookout} »`) : h('p', { class: 'small' }, `${P.Il} n’a pas encore écrit son petit mot. Il arrive avant le rendez-vous.`) },
         { label: 'Pour te reconnaître', italic: !!m.lookout, text: m.lookout ? `« ${m.lookout} »` : 'Un petit mot pour qu’on te reconnaisse : un accessoire, une couleur, où tu seras…' },
         { label: 'Ton pari', italic: true, text: m.bet ? `« ${m.bet} »` : `D’après ce que tu sais de ${P.lui}, si tu devais parier quelque chose sur ${P.lui}, tu dirais quoi ? S’il est juste, 2 points pour toi.` },
-      ],
+      ].filter(Boolean),
       actions: todo ? button(m.bet === undefined && m.lookout === undefined ? 'Je réponds' : m.bet === undefined ? 'J’écris mon pari' : 'J’écris mon petit mot', () => prepForm(c))
         : status(`C’est noté. On rouvre ${weekday(c.date.dateAt)} soir.`),
     });

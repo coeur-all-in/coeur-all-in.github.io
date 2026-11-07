@@ -4,6 +4,7 @@ import { forms, portraitText } from './content.js';
 import { askPermission, disablePush, downloadCalendar, enablePush, isIosBrowser, notifOff, notifState, notifyNew, pushSupported, setBadge } from './notify.js';
 import { CARDS, TILE, arriveBox, endDateSheet, markDone, needsAction } from './screens/cards.js';
 import { onboarding } from './screens/onboarding.js';
+import { livenessView } from './screens/liveness.js';
 import { chatListView, chatOpensAt, enableSwipeBack, rdvView, renderMessages, threadView } from './screens/tabs.js';
 import { createStore } from './store/index.js';
 import { gamesFor, scoreBoard } from './date-logic.js';
@@ -36,7 +37,10 @@ const markSeen = (k) => { const s = seen(); s.add(k); pref.set(seenKey(), [...s]
 
 // ---------- Contexte passé aux cartes ----------
 function ctx() {
-  const { date, partner } = S.data;
+  const { date } = S.data;
+  // Date organisé par des amis : la fiche écrite par son ami remplace son portrait.
+  const fiche = date.fiches?.[S.data.partner?.id];
+  const partner = fiche ? { ...S.data.partner, portrait: fiche.portrait || S.data.partner.portrait, fiche } : S.data.partner;
   return {
     date, partner, me: S.profile, uid: S.uid, store: S.store, now: clock.now(),
     portrait: portraitText(partner),
@@ -291,8 +295,13 @@ async function afterLogin() {
   if (!S.admin) clock.reset();
   if (S.profile) enablePush(S.store, { silent: true }); // resynchronise l'abonnement si déjà autorisé
   if (!S.profile) return S.store.needsAuth ? showOnboarding() : showWelcome();
-  if (needsNotifGate()) return showNotifGate(() => route({ autoOpen: true }));
-  await route({ autoOpen: true });
+  const go = async () => {
+    const t = IS_REMOTE ? await pendingInvite() : null;
+    if (t) return showInvite(t, () => route({ autoOpen: true }));
+    return route({ autoOpen: true });
+  };
+  if (needsNotifGate()) return showNotifGate(go);
+  await go();
 }
 
 // ---------- Compte : inscription / connexion ----------
@@ -401,6 +410,7 @@ function showWelcome() {
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   root.replaceChildren(h('main', { class: 'screen' },
     h('div', { class: 'topbar' }, h('div', { class: 'brand' }, logo(), CONFIG.APP_NAME), h('span')),
+    pref.get(INVITE, null) && status('Un ami veut te présenter quelqu’un : crée ton compte pour voir son invitation.', 'heart'),
     h('div', { class: 'eyebrow' }, 'Pas de photo. Pas de swipe.'),
     h('h1', { class: 'title' }, 'Un soir, une personne'),
     h('div', { class: 'meta' }, 'Le reste, je m’en occupe'),
@@ -419,7 +429,9 @@ function showWelcome() {
 
 function showOnboarding(edit = false) {
   S.view = 'onboarding';
+  const invited = !edit && !!pref.get(INVITE, null);
   onboarding(root, {
+    short: invited,
     initial: edit ? S.profile : null,
     onCancel: edit ? () => route() : async () => {
       if (!S.store.needsAuth) return showWelcome();
@@ -430,7 +442,8 @@ function showOnboarding(edit = false) {
     onDone: async (p) => {
       S.profile = await S.store.saveProfile(p);
       if (edit) { toast('Portrait enregistré.'); return route(); }
-      showNotifGate(() => showVerify(() => showSearch()));
+      const t = pref.get(INVITE, null);
+      showNotifGate(() => showLiveness(() => (t ? showInvite(t, () => route({ autoOpen: true })) : showSearch()), { later: !t }));
     },
   });
 }
@@ -612,6 +625,7 @@ function showSearch() {
   S.view = 'search';
   live(null);
   if (!S.profile.verified) return showVerifyWait();
+  if (!S.profile.portrait?.first) return showProfileToComplete();
   S.searchBox = h('div', {});
   root.replaceChildren(h('main', { class: 'screen' },
     topbar(),
@@ -621,6 +635,7 @@ function showSearch() {
     h('div', { class: 'body', style: { textAlign: 'center' } },
       h('p', {}, 'Je commence exigeant, puis j’élargis minute après minute. Au bout de 15 minutes, je te présente la première personne disponible.')),
     S.searchBox,
+    modeSwitch(),
     demoOn() && h('section', { class: 'demo' },
       h('div', { class: 'k' }, 'Mode démo (admin)'),
       button('Choisir mon match', () => pickMatch(), 'btn quiet'),
@@ -641,6 +656,10 @@ function showSearch() {
 }
 
 function renderSearch(info) {
+  if (S.searchBox && info?.setup_pending) {
+    S.searchBox.replaceChildren(status('Tes amis préparent ton date : je ne cherche personne d’autre en attendant.', 'heart'));
+    return;
+  }
   if (!S.searchBox || !info || info.level == null) return;
   const lvl = Number(info.level) || 0;
   const p = S.profile;
@@ -677,156 +696,284 @@ async function trySearch() {
   } finally { S.searching = false; }
 }
 
-// ---------- Vérification d'identité ----------
-// Une photo d'une pièce d'identité officielle + un selfie. Vérifiés par l'équipe, puis supprimés.
-// Le sexe indiqué sur le document sert au matching (on ne le demande plus dans le questionnaire).
-async function shrinkImage(file, max = 1600) {
-  let src;
-  try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
-  catch {
-    src = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
-  }
-  const w = src.width || src.naturalWidth;
-  const ht = src.height || src.naturalHeight;
-  const k = Math.min(1, max / Math.max(w, ht));
-  const cv = document.createElement('canvas');
-  cv.width = Math.round(w * k); cv.height = Math.round(ht * k);
-  cv.getContext('2d').drawImage(src, 0, 0, cv.width, cv.height);
-  return new Promise((res) => cv.toBlob((b) => res(b), 'image/jpeg', 0.85));
-}
-
-function showVerify(next, { rejected } = {}) {
+// ---------- Vérification « vraie personne » (visage) ----------
+// La caméra s'allume, on tourne la tête (haut, droite, gauche). Rien n'est enregistré ni envoyé.
+function showLiveness(next, { later = true } = {}) {
   S.view = 'verify';
-  const st = { doc: null, selfie: null, sex: null };
-  const err = h('div', { class: 'error', role: 'alert' });
-  const tile = (key, label, hint, capture, ic) => {
-    const prev = h('div', { class: 'id-prev' }, icon(ic), h('strong', {}, label), h('span', {}, hint));
-    const input = h('input', { type: 'file', accept: 'image/*', capture, hidden: true, onchange: async (e) => {
-      const f = e.target.files?.[0];
-      if (!f) return;
-      prev.replaceChildren(h('span', {}, 'Préparation…'));
-      try {
-        st[key] = await shrinkImage(f);
-        const url = URL.createObjectURL(st[key]);
-        prev.replaceChildren(h('img', { src: url, alt: label }), h('span', { class: 'id-ok' }, '✓ ' + label + ' · toucher pour changer'));
-      } catch { prev.replaceChildren(h('strong', {}, 'Image illisible'), h('span', {}, 'Réessaie avec une autre photo.')); }
-    } });
-    return h('button', { type: 'button', class: 'id-tile', onclick: () => input.click() }, prev, input);
-  };
-  const solo = !IS_REMOTE;
-  const sexPick = solo && h('div', { class: 'field' }, h('label', {}, 'Mode solo : le sexe indiqué sur ton document (simulé)'),
-    h('div', { class: 'chips' }, ['homme', 'femme'].map((x) => {
-      const b = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'false', onclick: () => { st.sex = x; b.parentNode.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', String(c === b))); } }, x === 'homme' ? 'Homme' : 'Femme');
-      return b;
-    })));
+  let view;
+  const leave = (fn) => { view?.stop?.(); fn(); };
+  view = livenessView({
+    onDone: async () => {
+      await S.store.completeLiveness();
+      S.profile = { ...S.profile, verified: true };
+      toast('Vérification réussie ✓');
+      setTimeout(next, 700);
+    },
+    onLater: later ? () => leave(next) : null,
+  });
   root.replaceChildren(h('main', { class: 'screen' },
     h('div', { class: 'topbar' }, h('div', { class: 'brand' }, logo(), CONFIG.APP_NAME), h('span')),
     h('div', { class: 'eyebrow' }, 'Sécurité'),
-    h('h1', { class: 'title', style: { fontSize: '44px' } }, 'Vérifie ton identité'),
-    h('div', { class: 'body' }, h('p', {}, 'Pour que chacun sache qu’il rencontre une vraie personne, tout le monde est vérifié avant le premier date.')),
-    rejected && status(`Ta dernière demande a été refusée : ${rejected}`, 'info'),
-    h('div', { class: 'id-grid' },
-      tile('doc', 'Ta pièce d’identité', 'Carte d’identité, passeport, permis ou titre de séjour · recto, bien lisible', 'environment', 'shield'),
-      tile('selfie', 'Un selfie', 'Ton visage, de face, bien éclairé', 'user', 'user')),
-    sexPick,
-    h('p', { class: 'small' }, 'Ton document n’est vu que par la personne qui vérifie, puis supprimé dès la vérification faite. On ne garde que « vérifié ✓ » et le sexe indiqué, pour le matching. Jamais montré aux autres.'),
-    err,
+    h('h1', { class: 'title', style: { fontSize: '40px', marginBottom: '6px' } }, 'Montre-moi que c’est toi'),
+    h('p', { class: 'small', style: { margin: '0 0 8px' } }, 'Pour que chacun rencontre une vraie personne. Suis les indications : le cercle passe au vert du côté où tu tournes la tête.'),
+    view,
     h('div', { class: 'spacer' }),
-    button('Envoyer pour vérification', async () => {
-      err.textContent = '';
-      if (!st.doc || !st.selfie) { err.textContent = 'Il faut la photo du document et un selfie.'; return; }
-      if (solo && !st.sex) { err.textContent = 'Choisis le sexe indiqué (simulation).'; return; }
-      try {
-        await S.store.submitVerification(st.doc, st.selfie, st.sex);
-        S.profile = await S.store.getProfile();
-        toast(solo ? 'Identité vérifiée (simulation).' : 'Envoyé. Je te préviens dès que c’est vérifié.');
-        next();
-      } catch (e) { err.textContent = /bucket|not found|storage/i.test(e.message) ? 'Le stockage des documents n’est pas prêt : relance le script SQL (admin).' : e.message; }
-    }),
-    button('Plus tard', () => next(), 'link'),
-  ));
+    later && button('Plus tard', () => leave(next), 'link')));
 }
 
-// Écran d'attente tant que l'identité n'est pas vérifiée (la recherche ne démarre qu'après).
-async function showVerifyWait() {
+// Tant que la vérification n'est pas faite, la recherche ne démarre pas.
+function showVerifyWait() {
   S.view = 'search';
-  const box = h('div', {}, h('p', { class: 'small', style: { textAlign: 'center' } }, 'Chargement…'));
   root.replaceChildren(h('main', { class: 'screen' },
     topbar(),
     h('div', { class: 'pulse' }, icon('shield')),
     h('div', { class: 'eyebrow', style: { alignSelf: 'center' } }, 'Avant de chercher'),
-    h('h1', { class: 'title', style: { textAlign: 'center', marginBottom: '14px', fontSize: '44px' } }, 'Identité'),
-    box,
+    h('h1', { class: 'title', style: { textAlign: 'center', marginBottom: '14px', fontSize: '44px' } }, 'Une vérification'),
+    h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, 'Pour que chacun rencontre une vraie personne, je vérifie que c’est bien toi : tu tournes la tête devant la caméra, 10 secondes. Aucune photo n’est prise.')),
+    button('Commencer la vérification', () => showLiveness(() => showSearch())),
+    modeSwitch(),
     demoOn() && h('section', { class: 'demo' },
       h('div', { class: 'k' }, 'Mode démo (admin)'),
       button('Choisir mon match', () => pickMatch(), 'btn quiet')),
     h('div', { class: 'spacer' }),
     tabbar('home')));
-  const v = await S.store.getVerification?.() || { status: 'none' };
-  if (S.view !== 'search') return;
-  if (v.status === 'approved') { S.profile = await S.store.getProfile(); if (S.profile.verified) return showSearch(); }
-  const again = () => showVerify(() => showSearch(), { rejected: v.status === 'rejected' ? (v.note || 'document illisible') : null });
-  box.replaceChildren(...({
-    pending: [h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, 'Tes documents sont en cours de vérification. Je te préviens dès que c’est fait, puis je commence à chercher.')),
-      status('En cours de vérification', 'hourglass')],
-    rejected: [h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, `Ta vérification a été refusée : ${v.note || 'document illisible'}. Tu peux renvoyer de nouvelles photos.`)),
-      button('Renvoyer mes photos', again)],
-  }[v.status] || [h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, 'Pour que chacun rencontre une vraie personne, je vérifie l’identité de tout le monde avant le premier date. Ça prend une minute.')),
-    button('Vérifier mon identité', again)]));
-  // Tant que c'est en attente, on revérifie de temps en temps.
-  if (v.status === 'pending') setTimeout(() => { if (S.view === 'search' && !S.profile.verified) showVerifyWait(); }, 20000);
 }
 
-// Admin : demandes de vérification en attente.
-function adminVerifications() {
+// « Je matche pour moi » / « Je matche pour un ami »
+function modeSwitch() {
+  return h('section', { class: 'mode-switch' },
+    h('button', { type: 'button', class: 'mode on' }, h('strong', {}, 'Je matche pour moi'), h('span', {}, 'Je te trouve quelqu’un')),
+    h('button', { type: 'button', class: 'mode', onclick: () => showFriendMatch() }, h('strong', {}, 'Je matche pour un ami'), h('span', {}, 'Avec un ami, présentez vos amis')));
+}
+
+// ---------- Amis ----------
+function friendsSheet() {
   sheet((close) => {
     const box = h('div', {}, h('p', { class: 'small' }, 'Chargement…'));
-    S.store.adminVerifications().then((list) => {
-      if (!list.length) { box.replaceChildren(h('p', { class: 'small' }, 'Aucune demande en attente.')); return; }
-      box.replaceChildren(h('div', { class: 'convs' }, list.map((v) => h('button', {
-        class: 'conv old', type: 'button', onclick: () => { close(); verifDetail(v); },
-      }, avatarOf(v.first_name), h('div', { class: 'conv-main' },
-        h('div', { class: 'conv-top' }, h('span', { class: 'conv-name' }, v.first_name || '(sans prénom)'), h('span', { class: 'conv-time' }, shortDay(Date.parse(v.submitted_at), Date.now()))),
-        h('div', { class: 'conv-bottom' }, h('span', { class: 'conv-preview' }, [v.email, v.city].filter(Boolean).join(' · '))))))));
-    }).catch((e) => box.replaceChildren(h('p', { class: 'small' }, `${e.message}. Relance le script SQL.`)));
-    return [h('h3', {}, 'Vérifications'), h('p', { class: 'sub' }, 'Compare le selfie et le document, vérifie l’âge, puis indique le sexe inscrit sur le document.'), box];
+    const err = h('div', { class: 'error' });
+    let mail = '';
+    const load = async () => {
+      if (!IS_REMOTE) { box.replaceChildren(h('p', { class: 'small' }, 'Les amis fonctionnent avec de vrais comptes (mode en ligne).')); return; }
+      const list = await S.store.friends().catch((e) => { box.replaceChildren(h('p', { class: 'small' }, `${e.message}. Relance le script SQL.`)); return null; });
+      if (!list) return;
+      if (!list.length) { box.replaceChildren(h('p', { class: 'small' }, 'Pas encore d’ami. Ajoute quelqu’un avec son e-mail.')); return; }
+      box.replaceChildren(h('div', { class: 'convs' }, list.map((f) => h('div', { class: 'conv old friend-row' },
+        avatarOf(f.name),
+        h('div', { class: 'conv-main' },
+          h('div', { class: 'conv-top' }, h('span', { class: 'conv-name' }, f.name),
+            f.status === 'accepted' ? h('span', { class: 'conv-time' }, 'Ami ✓') : h('span', { class: 'conv-time' }, f.incoming ? 'Demande reçue' : 'En attente')),
+          h('div', { class: 'conv-bottom' }, h('span', { class: 'conv-preview' }, f.email)),
+          f.status === 'pending' && f.incoming && h('div', { class: 'btn-row', style: { marginTop: '8px' } },
+            button('Accepter', async () => { await S.store.respondFriend(f.id, true); toast(`${f.name} est ton ami.`); load(); }, 'btn quiet small-btn'),
+            button('Refuser', async () => { await S.store.respondFriend(f.id, false); load(); }, 'btn ghost small-btn')),
+          f.status === 'accepted' && h('button', { type: 'button', class: 'link', style: { margin: '2px 0 0', padding: '4px 0', textAlign: 'left' }, onclick: async () => {
+            if (await confirmSheet({ title: `Retirer ${f.name} ?`, sub: 'Vous ne serez plus amis sur Cœur All In.', yes: 'Retirer' })) { await S.store.removeFriend(f.id); load(); }
+          } }, 'Retirer'))))));
+    };
+    load();
+    return [
+      h('h3', {}, 'Mes amis'),
+      h('p', { class: 'sub' }, 'Ajoute un ami avec l’adresse e-mail de son compte Cœur All In. Entre amis, vous pourrez organiser un date pour deux de vos proches.'),
+      h('div', { class: 'field' }, h('input', { class: 'input', type: 'email', inputmode: 'email', autocapitalize: 'off', placeholder: 'e-mail de ton ami', oninput: (e) => { mail = e.target.value; } })),
+      err,
+      button('Ajouter en ami', async () => {
+        err.textContent = '';
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail.trim())) { err.textContent = 'Adresse e-mail invalide.'; return; }
+        if (!IS_REMOTE) { err.textContent = 'Disponible en mode en ligne.'; return; }
+        try {
+          const r = await S.store.addFriend(mail.trim());
+          toast({ sent: `Demande envoyée à ${r.name}.`, accepted: `${r.name} est ton ami.`, already: `${r.name} est déjà ton ami.`, pending: 'Demande déjà envoyée.', self: 'C’est ton adresse 🙂', notfound: 'Aucun compte avec cet e-mail. Invite ton ami à installer l’appli.' }[r.status] || 'C’est noté.');
+          load();
+        } catch (e) { err.textContent = e.message; }
+      }),
+      h('div', { class: 'section-label' }, 'Liste'),
+      box,
+    ];
   });
 }
 
-function verifDetail(v) {
+// ---------- « Je matche pour un ami » ----------
+// A1 et A2 (amis) se choisissent ; chacun invite un ami (B1, B2) par e-mail ou lien ;
+// si B1 et B2 acceptent, chacun écrit la fiche de son ami (et voit celle de l'autre) ; puis le date est créé.
+const SETUP_STEPS = ['Vous vous choisissez', 'Chacun invite un ami', 'Les deux amis acceptent', 'Vous écrivez leurs fiches', 'Le date commence'];
+
+async function showFriendMatch() {
+  S.view = 'setups';
+  const box = h('div', {}, h('p', { class: 'small' }, 'Chargement…'));
+  root.replaceChildren(h('main', { class: 'screen' },
+    topbar(),
+    h('div', { class: 'eyebrow' }, 'Je matche pour un ami'),
+    h('h1', { class: 'title', style: { fontSize: '42px' } }, 'Jouez les entremetteurs'),
+    h('div', { class: 'body' }, h('p', {}, 'Avec un ami, présentez chacun quelqu’un que vous connaissez. Vous écrivez leurs fiches ; eux ne sauront pas qui ils rencontrent avant le rendez-vous.')),
+    h('ol', { class: 'list' }, SETUP_STEPS.map((t, i) => h('li', {}, h('span', { class: 'n' }, String(i + 1).padStart(2, '0')), h('span', {}, t)))),
+    box,
+    h('div', { class: 'spacer' }),
+    tabbar('home')));
+  if (!IS_REMOTE) { box.replaceChildren(status('Disponible en mode en ligne, avec de vrais comptes.', 'info')); return; }
+  let list = [];
+  let friends = [];
+  try { [list, friends] = await Promise.all([S.store.setups(), S.store.friends()]); }
+  catch (e) { box.replaceChildren(status(`${e.message}. Relance le script SQL.`, 'info')); return; }
+  if (S.view !== 'setups') return;
+  const accepted = friends.filter((f) => f.status === 'accepted');
+  box.replaceChildren(
+    h('div', { class: 'section-label' }, 'Mes matchs pour amis'),
+    list.length ? h('div', { class: 'setups' }, list.map(setupCard)) : h('p', { class: 'small' }, 'Aucun pour l’instant.'),
+    h('div', { class: 'section-label' }, 'Nouveau'),
+    accepted.length
+      ? h('div', { class: 'chips' }, accepted.map((f) => button(`Avec ${f.name}`, async () => {
+        if (!(await confirmSheet({ title: `Organiser un date avec ${f.name} ?`, sub: `${f.name} doit accepter aussi. Ensuite, chacun invite un ami à rencontrer celui de l’autre.`, yes: 'Proposer' }))) return;
+        try { await S.store.proposeSetup(f.other); toast(`Proposé à ${f.name}.`); showFriendMatch(); } catch (e) { toast(e.message); }
+      }, 'chip')))
+      : h('p', { class: 'small' }, 'Ajoute d’abord un ami (avec son e-mail).'),
+    h('div', { style: { height: '12px' } }),
+    button('Mes amis', () => friendsSheet(), 'btn quiet'));
+}
+
+function setupCard(x) {
+  const done = { proposed: 0, accepted: x.my_b_status === 'accepted' && x.their_b_status === 'accepted' ? (x.my_fiche ? 3 : 3) : 1, dated: 5, cancelled: -1 }[x.status];
+  const head = h('div', { class: 'setup-head' }, h('strong', {}, `Avec ${x.friend}`),
+    h('span', { class: `setup-st ${x.status}` }, { proposed: 'Proposé', accepted: 'En cours', dated: 'Date créé', cancelled: 'Annulé' }[x.status]));
+  const body = [];
+  const bName = (n, st, mail) => (st === 'accepted' ? `${n || 'Ton ami'} a accepté ✓` : st === 'declined' ? `${mail || 'Ton ami'} a refusé` : st === 'invited' ? `Invitation envoyée à ${mail}` : 'Pas encore invité');
+  if (x.status === 'proposed') {
+    if (x.mine) body.push(status(`J’attends que ${x.friend} accepte.`, 'hourglass'), button('Annuler', async () => { await S.store.cancelSetup(x.id); showFriendMatch(); }, 'link'));
+    else body.push(h('p', {}, `${x.friend} veut organiser un date avec toi : chacun présente un ami.`),
+      h('div', { class: 'btn-row' },
+        button('Accepter', async () => { await S.store.respondSetup(x.id, true); showFriendMatch(); }),
+        button('Refuser', async () => { await S.store.respondSetup(x.id, false); showFriendMatch(); }, 'btn ghost')));
+  } else if (x.status === 'accepted') {
+    const bothIn = x.my_b_status === 'accepted' && x.their_b_status === 'accepted';
+    body.push(
+      h('div', { class: 'setup-row' }, h('span', {}, 'Ton ami'), h('b', {}, bName(x.my_b_name, x.my_b_status, x.my_email))),
+      h('div', { class: 'setup-row' }, h('span', {}, `L’ami de ${x.friend}`), h('b', {}, x.their_b_status === 'accepted' ? `${x.their_b_name || 'Son ami'} a accepté ✓` : x.their_b_status === 'invited' ? 'Invité, pas encore répondu' : x.their_b_status === 'declined' ? 'A refusé : il en invite un autre' : 'Pas encore invité')));
+    if (x.my_b_status !== 'accepted') {
+      let mail = x.my_email || '';
+      body.push(
+        h('div', { class: 'field', style: { margin: '12px 0 8px' } }, h('input', { class: 'input', type: 'email', inputmode: 'email', autocapitalize: 'off', value: mail, placeholder: 'e-mail de l’ami que tu présentes', oninput: (e) => { mail = e.target.value; } })),
+        button(x.my_b_status === 'invited' ? 'Renvoyer l’invitation' : 'Inviter mon ami', async () => {
+          try { const tok = await S.store.inviteForSetup(x.id, mail.trim()); toast('Invitation créée.'); shareInvite(tok); showFriendMatch(); } catch (e) { toast(e.message); }
+        }),
+        x.my_token && button('Partager le lien d’invitation', () => shareInvite(x.my_token), 'btn quiet'));
+    }
+    if (bothIn) {
+      body.push(h('div', { class: 'section-label' }, 'Les fiches'),
+        x.my_fiche ? ficheView(x.my_fiche, `Ta fiche sur ${x.my_b_name}`) : button(`Écrire la fiche de ${x.my_b_name || 'ton ami'}`, () => ficheSheet(x)),
+        x.my_fiche && button('Modifier ma fiche', () => ficheSheet(x), 'link'),
+        x.their_fiche ? ficheView(x.their_fiche, `La fiche de ${x.their_b_name} (par ${x.friend})`) : h('p', { class: 'small' }, `${x.friend} n’a pas encore écrit la fiche de ${x.their_b_name || 'son ami'}.`));
+      if (x.note === 'busy') body.push(status('L’un des deux a déjà un date en cours : le vôtre démarrera après.', 'info'));
+    }
+    body.push(button('Annuler ce match', async () => { if (await confirmSheet({ title: 'Annuler ce match ?', sub: 'Vos deux amis ne seront pas présentés.', yes: 'Annuler le match' })) { await S.store.cancelSetup(x.id); showFriendMatch(); } }, 'link'));
+  } else if (x.status === 'dated') {
+    body.push(status(`Date ${x.date_at ? `${weekday(Date.parse(x.date_at))} ${dayLabel(Date.parse(x.date_at), { capital: false })} à 20h` : 'créé'} entre ${x.my_b_name || 'ton ami'} et ${x.their_b_name || 'son ami'}.`),
+      x.their_fiche && ficheView(x.their_fiche, `La fiche de ${x.their_b_name}`));
+  }
+  return h('section', { class: `setup${x.status === 'cancelled' ? ' off' : ''}` }, head,
+    done >= 0 && h('div', { class: 'progress', style: { margin: '10px 0 12px' } }, SETUP_STEPS.map((_, k) => h('i', { class: k < done ? 'on' : '' }))),
+    body);
+}
+
+function ficheView(f, label) {
+  const rows = [
+    ['Ce qu’on remarque', f.portrait?.first], ['Avec les gens', f.portrait?.people], ['Pardonne tout, sauf', f.portrait?.unforgivable],
+    ['Ce qu’on dit de lui / d’elle', f.said], ['Physique', f.looks],
+  ].filter(([, v]) => v);
+  return h('div', { class: 'fiche' }, h('div', { class: 'fiche-k' }, label), rows.map(([k, v]) => h('div', { class: 'fiche-row' }, h('span', {}, k), h('p', {}, v))));
+}
+
+function ficheSheet(x) {
+  const f = structuredClone(x.my_fiche || { portrait: {}, said: '', looks: '' });
+  f.portrait = f.portrait || {};
+  const name = x.my_b_name || 'ton ami';
   sheet((close) => {
-    let sex = null;
-    let note = '';
-    const imgs = h('div', { class: 'id-grid' }, h('p', { class: 'small' }, 'Chargement des photos…'));
-    Promise.all([S.store.adminVerifUrl(v.doc_path), S.store.adminVerifUrl(v.selfie_path)]).then(([d, se]) => imgs.replaceChildren(
-      d ? h('a', { href: d, target: '_blank', rel: 'noopener', class: 'id-tile' }, h('div', { class: 'id-prev' }, h('img', { src: d, alt: 'Document' }), h('span', {}, 'Document'))) : h('p', { class: 'small' }, 'Document introuvable'),
-      se ? h('a', { href: se, target: '_blank', rel: 'noopener', class: 'id-tile' }, h('div', { class: 'id-prev' }, h('img', { src: se, alt: 'Selfie' }), h('span', {}, 'Selfie'))) : h('p', { class: 'small' }, 'Selfie introuvable')));
-    const ageTxt = v.birthdate ? `${Math.floor((Date.now() - Date.parse(v.birthdate)) / 31557600000)} ans (né·e le ${new Date(v.birthdate).toLocaleDateString('fr-FR')})` : 'âge inconnu';
-    const sexChips = h('div', { class: 'chips' }, ['homme', 'femme'].map((x) => {
-      const b = h('button', { type: 'button', class: 'chip', 'aria-pressed': 'false', onclick: () => { sex = x; sexChips.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', String(c === b))); } }, x === 'homme' ? 'Homme' : 'Femme');
-      return b;
-    }));
-    const reasons = ['Document illisible', 'Le selfie ne correspond pas au document', 'Document non officiel ou expiré', 'Âge différent de celui déclaré'];
     const err = h('div', { class: 'error' });
+    const inp = (label, get, set, ph, long) => h('div', { class: 'field' }, h('label', {}, label),
+      h(long ? 'textarea' : 'input', { class: 'input', maxlength: long ? 300 : 120, placeholder: ph, value: get() || '', oninput: (e) => set(e.target.value) }, long ? (get() || '') : null));
     return [
-      h('h3', {}, v.first_name || 'Vérification'),
-      h('p', { class: 'sub' }, `Déclaré : ${v.first_name || '?'}, ${ageTxt} · ${v.email || ''}`),
-      imgs,
-      h('div', { class: 'field', style: { marginTop: '16px' } }, h('label', {}, 'Sexe inscrit sur le document'), sexChips),
+      h('h3', {}, `La fiche de ${name}`),
+      h('p', { class: 'sub' }, `C’est ce que lira la personne présentée par ${x.friend}. ${x.friend} la verra aussi. ${name} ne la verra pas.`),
+      inp(`Ce qu’on remarque chez ${name} dès les premières minutes`, () => f.portrait.first, (v) => { f.portrait.first = v; }, 'drôle, sans jamais forcer'),
+      inp(`Ce que ${name} fait avec les gens`, () => f.portrait.people, (v) => { f.portrait.people = v; }, 'se souvient de tout ce qu’on lui raconte'),
+      inp(`${name} pardonne à peu près tout, sauf…`, () => f.portrait.unforgivable, (v) => { f.portrait.unforgivable = v; }, 'qu’on soit en retard sans prévenir'),
+      inp('Ce qu’on dit de lui / d’elle', () => f.said, (v) => { f.said = v; }, 'La personne la plus fiable que je connaisse', true),
+      inp('Sa description physique', () => f.looks, (v) => { f.looks = v; }, 'Grand, cheveux bouclés, toujours en baskets blanches', true),
       err,
-      button('Valider l’identité', async () => {
-        if (!sex) { err.textContent = 'Indique le sexe inscrit sur le document.'; return; }
-        await S.store.adminDecideVerification(v.user_id, true, sex, null);
-        close(); toast('Identité validée. Photos supprimées.'); adminVerifications();
+      button('Enregistrer la fiche', async () => {
+        if (!f.portrait.first?.trim() || !f.portrait.people?.trim() || !f.said?.trim() || !f.looks?.trim()) { err.textContent = 'Remplis au moins les deux premières phrases, ce qu’on dit et le physique.'; return; }
+        try {
+          const r = await S.store.saveFiche(x.id, f);
+          close();
+          toast(r === 'dated' ? 'Le date est créé ! Vos deux amis reçoivent leur première carte.' : r === 'busy' ? 'Fiche enregistrée. L’un des deux a déjà un date en cours.' : `Fiche enregistrée. J’attends celle de ${x.friend}.`);
+          showFriendMatch();
+        } catch (e) { err.textContent = e.message; }
       }),
-      h('div', { class: 'section-label' }, 'Ou refuser'),
-      h('div', { class: 'chips' }, reasons.map((r) => button(r, async () => {
-        note = r;
-        await S.store.adminDecideVerification(v.user_id, false, null, note);
-        close(); toast('Refusé. La personne peut renvoyer des photos.'); adminVerifications();
-      }, 'chip'))),
     ];
   });
+}
+
+function shareInvite(token) {
+  if (!token) return;
+  const url = `${location.origin}${location.pathname}?invite=${token}`;
+  const text = 'Je veux te présenter quelqu’un sur Cœur All In 💘';
+  if (navigator.share) navigator.share({ title: 'Cœur All In', text, url }).catch(() => {});
+  else navigator.clipboard?.writeText(url).then(() => toast('Lien copié. Envoie-le à ton ami.'), () => toast(url));
+}
+
+// ---------- Invitation reçue (je suis l'ami présenté) ----------
+const INVITE = 'invite';
+function takeInviteFromUrl() {
+  const q = new URLSearchParams(location.search);
+  const t = q.get('invite');
+  if (t) { pref.set(INVITE, t); history.replaceState(null, '', location.pathname); }
+}
+takeInviteFromUrl();
+
+async function pendingInvite() {
+  const t = pref.get(INVITE, null);
+  if (t) return t;
+  const list = await S.store.myInvites?.().catch(() => []) || [];
+  return list[0]?.token || null;
+}
+
+async function showInvite(token, next) {
+  S.view = 'invite';
+  const info = await S.store.inviteInfo?.(token);
+  const done = () => { pref.set(INVITE, null); next(); };
+  if (!info || info.status === 'cancelled' || info.status === 'declined') {
+    pref.set(INVITE, null);
+    toast('Cette invitation n’est plus valable.');
+    return next();
+  }
+  if (info.status === 'accepted') { pref.set(INVITE, null); return next(); }
+  root.replaceChildren(h('main', { class: 'screen' },
+    h('div', { class: 'topbar' }, h('div', { class: 'brand' }, logo(), CONFIG.APP_NAME), h('span')),
+    h('div', { class: 'pulse' }, icon('heart')),
+    h('div', { class: 'eyebrow', style: { alignSelf: 'center' } }, 'Un ami pense à toi'),
+    h('h1', { class: 'title', style: { textAlign: 'center', fontSize: '42px' } }, `${info.from} veut te présenter quelqu’un`),
+    h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, `${info.from} et un de ses amis veulent vous présenter l’un à l’autre. Tu ne sauras pas qui c’est avant le rendez-vous : seulement ce que son ami dit de lui ou d’elle.`)),
+    card({ items: [`${info.from} écrit ta fiche, l’autre écrit celle de son ami`, 'Un rendez-vous à 20h, dans un lieu public', 'Des cartes, des jeux, un objectif secret'] }),
+    h('div', { class: 'spacer' }),
+    button('J’accepte', async () => {
+      if (!S.profile.verified) return showLiveness(() => showInvite(token, next), { later: false });
+      try { await S.store.respondInvite(token, true); toast(`C’est noté ! ${info.from} prépare ta fiche.`); done(); }
+      catch (e) { toast(e.message); }
+    }),
+    button('Non merci', async () => { try { await S.store.respondInvite(token, false); } catch { /* rien */ } done(); }, 'link')));
+}
+
+// Personne invitée par un ami : son portrait est court. Pour la recherche aléatoire, il faut le compléter.
+function showProfileToComplete() {
+  S.view = 'search';
+  root.replaceChildren(h('main', { class: 'screen' },
+    topbar(),
+    h('div', { class: 'pulse' }, icon('user')),
+    h('div', { class: 'eyebrow', style: { alignSelf: 'center' } }, 'Avant de chercher'),
+    h('h1', { class: 'title', style: { textAlign: 'center', fontSize: '42px' } }, 'Ton portrait'),
+    h('div', { class: 'body', style: { textAlign: 'center' } }, h('p', {}, 'Pour que je te trouve quelqu’un moi-même, complète ton portrait : ton style, ton caractère, ton type. Cinq minutes.')),
+    button('Compléter mon portrait', () => showOnboarding(true)),
+    modeSwitch(),
+    h('div', { class: 'spacer' }),
+    tabbar('home')));
 }
 
 async function nextMatch({ quiet } = {}) {
@@ -1059,7 +1206,7 @@ function renderChatList({ still } = {}) {
   const y = S.view === 'chat' && still ? scrollPos() : 0;
   root.replaceChildren(h('main', { class: `screen${still ? ' still' : ''}` },
     topbar(),
-    chatListView(rows, (r) => (r.current ? showThread() : openPastThread(r.past))),
+    chatListView(rows, (r) => (r.current ? showThread() : openPastThread(r.past)), (r) => deleteChat(r.past, () => renderChatList({ still: true }))),
     h('div', { class: 'spacer' }),
     tabbar('chat')));
   setScroll(y);
@@ -1125,6 +1272,18 @@ async function pollChat(force) {
 }
 
 // Ancienne conversation : lecture seule.
+// Supprimer définitivement une ancienne discussion (de mon côté ; effacée pour de bon quand les deux l'ont supprimée).
+async function deleteChat(t, after) {
+  const ok = await confirmSheet({ title: 'Supprimer la discussion ?', sub: `Ta discussion avec ${t.name} disparaît définitivement de ton téléphone. Impossible de la récupérer.`, yes: 'Supprimer définitivement', danger: true });
+  if (!ok) return;
+  try {
+    await S.store.deleteChat(t.dateId);
+    S.past = (S.past || []).filter((p) => p.dateId !== t.dateId);
+    toast('Discussion supprimée.');
+    after?.();
+  } catch (e) { toast(e.message); }
+}
+
 function openPastThread(t) {
   S.view = 'past-thread';
   root.querySelector(':scope > .thread-wrap')?.remove();
@@ -1137,6 +1296,7 @@ function openPastThread(t) {
   const wrap = h('div', { class: 'thread-wrap' }, threadView({
     name: t.name, sub: `Date du ${dayLabel(t.dateAt, { capital: false })}`, messages: t.messages, uid: S.uid,
     onBack: () => close(true), onSend: null, lockedText: 'Ancienne discussion · lecture seule',
+    onDelete: () => deleteChat(t, () => close(true)),
   }));
   root.append(wrap);
   enableSwipeBack(wrap, { under: scroller(), onBack: () => close(false) });
@@ -1153,12 +1313,14 @@ function openMenu() {
     h('p', { class: 'sub' }, IS_REMOTE ? `${S.profile?.firstName || ''} · ${S.store.email || ''}` : 'Mode solo · la personne en face est simulée'),
     item('home', 'Accueil', null, () => { close(); goTab('home'); }),
     item('user', 'Mon portrait', 'Modifier mes réponses', () => { close(); showOnboarding(true); }),
+    item('heart', 'Je matche pour un ami', 'Présentez vos amis l’un à l’autre', () => { close(); showFriendMatch(); }),
+    item('user', 'Mes amis', 'Ajouter un ami par e-mail', () => { close(); friendsSheet(); }),
     item('bell', 'Notifications', notifOff() ? 'Coupées' : notif === 'granted' ? 'Activées' : 'À activer', () => { close(); notifSettings(); }),
     hasDate && item('cal', 'Rappels dans mon calendrier', 'Chaque message à l’heure exacte, même appli fermée', () => { downloadCalendar(S.data.date, S.uid); close(); }),
     item('edit', 'Apparence', THEMES.find((t) => t.id === currentTheme())?.label, () => { close(); themeSheet(); }),
     demoOn() && S.store.adminListUsers && item('heart', 'Choisir mon match (admin)', 'Pour tester à deux', () => { close(); pickMatch(); }),
     S.admin && S.store.adminDiagnostics && item('info', 'Diagnostic (admin)', 'Notifications, tâches, fonction push', () => { close(); diagnostics(); }),
-    S.admin && S.store.adminVerifications && IS_REMOTE && item('shield', 'Vérifications d’identité (admin)', 'Valider les documents en attente', () => { close(); adminVerifications(); }),
+
     S.admin && item('clock', 'Mode démo (admin)', demoOn() ? 'Activé : tu peux avancer dans le temps' : 'Désactivé', () => { pref.set('demo', !demoOn()); if (!demoOn()) clock.reset(); close(); route(); }),
     hasDate && !endedOf(S.data.date) && item('close', 'Mettre fin au date', 'À tout moment, sans te justifier', () => { close(); endDateSheet(ctx()); }, 'danger'),
     hasDate && item('shield', 'Un souci avec ce date ?', 'Annuler, signaler, se protéger', () => { close(); safety(); }),
