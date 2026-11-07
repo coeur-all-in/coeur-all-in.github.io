@@ -1089,7 +1089,7 @@ language plpgsql security definer set search_path = public as $$
 declare
   s setups;
   side int;
-  tok text := encode(gen_random_bytes(18), 'hex');
+  tok text := replace(gen_random_uuid()::text, '-', '');  -- aléatoire, sans extension
   mail text := lower(trim(p_email));
   bid uuid;
   link text;
@@ -1271,7 +1271,7 @@ alter table public.profiles add column if not exists friend_code text unique;
 
 create or replace function public.my_friend_code() returns text
 language sql security definer set search_path = public as $$
-  update profiles set friend_code = coalesce(friend_code, encode(gen_random_bytes(9), 'hex'))
+  update profiles set friend_code = coalesce(friend_code, left(replace(gen_random_uuid()::text, '-', ''), 16))
   where id = auth.uid() returning friend_code
 $$;
 
